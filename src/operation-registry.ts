@@ -18,6 +18,7 @@ export type BuiltinOperationHandler = (input: {
   signal: AbortSignal;
   progress(value: number, message?: string): void;
   provenance: { runId: string; model?: string };
+  recipient?: "local" | "cloud";
 }) => Promise<Record<string, unknown>>;
 
 export class OperationRegistry {

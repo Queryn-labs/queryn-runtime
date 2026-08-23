@@ -6,18 +6,43 @@ const CONTEXT_SELECTION_MAX_TOKENS = 16_384;
 const AGENT_REPLY_MAX_TOKENS = 32_768;
 const AGENT_PLAN_MAX_TOKENS = 16_384;
 
+export interface ToolSchema {
+  name: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+}
+
+export interface ModelToolCall {
+  id: string;
+  name: string;
+  argumentsJson: string;
+}
+
+export type ModelChatMessage =
+  | { role: "system"; content: string }
+  | { role: "user"; content: string }
+  | { role: "assistant"; content?: string; toolCalls?: ModelToolCall[] }
+  | { role: "tool"; toolCallId: string; name?: string; content: string };
+
 export interface ModelRequest {
   projectPath?: string;
   model: string;
-  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+  messages: ModelChatMessage[];
   temperature?: number;
   maxTokens?: number;
   responseSchema?: Record<string, unknown>;
+  tools?: ToolSchema[];
   signal?: AbortSignal;
   onTextDelta?: (delta: string) => void;
 }
 
-export interface ModelResponse { text: string; model: string; usage?: { inputTokens?: number; outputTokens?: number } }
+export interface ModelResponse {
+  text: string;
+  model: string;
+  usage?: { inputTokens?: number; outputTokens?: number };
+  toolCalls?: ModelToolCall[];
+  finishReason?: string;
+}
 export interface ModelProvider {
   id: string;
   recipient: "local" | "cloud";
@@ -41,10 +66,16 @@ export class OpenAICompatibleProvider implements ModelProvider {
       method: "POST", signal: request.signal,
       headers: { "content-type": "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
       body: JSON.stringify({
-        model: request.model, messages: request.messages, temperature: request.temperature ?? 0,
+        model: request.model,
+        messages: request.messages.map(serializeMessage),
+        temperature: request.temperature ?? 0,
         max_tokens: request.maxTokens,
         stream: streaming,
         ...(streaming ? { stream_options: { include_usage: true } } : {}),
+        ...(request.tools?.length ? {
+          tools: request.tools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description ?? "", parameters: tool.parameters ?? { type: "object", properties: {} } } })),
+          tool_choice: "auto"
+        } : {}),
         ...(request.responseSchema ? { response_format: { type: "json_schema", json_schema: { name: "osnova_response", strict: true, schema: request.responseSchema } } } : {})
       })
     });
@@ -52,11 +83,45 @@ export class OpenAICompatibleProvider implements ModelProvider {
     if (streaming && response.body && response.headers.get("content-type")?.includes("text/event-stream")) {
       return readStreamingResponse(response, request.model, request.onTextDelta!);
     }
-    const body = await readBoundedJsonResponse(response) as { model?: string; choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
-    const text = body.choices?.[0]?.message?.content;
-    if (typeof text !== "string") throw new Error("Model provider returned no text result.");
-    return { text, model: body.model ?? request.model, usage: { inputTokens: body.usage?.prompt_tokens, outputTokens: body.usage?.completion_tokens } };
+    const body = await readBoundedJsonResponse(response) as {
+      model?: string;
+      choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }> }; finish_reason?: string | null }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
+    };
+    const choice = body.choices?.[0];
+    const text = typeof choice?.message?.content === "string" ? choice.message.content : "";
+    const toolCalls = normalizeToolCalls(choice?.message?.tool_calls);
+    if (!text && !toolCalls.length) throw new Error("Model provider returned no text result.");
+    return {
+      text, model: body.model ?? request.model,
+      usage: { inputTokens: body.usage?.prompt_tokens, outputTokens: body.usage?.completion_tokens },
+      toolCalls: toolCalls.length ? toolCalls : undefined,
+      finishReason: choice?.finish_reason ?? undefined
+    };
   }
+}
+
+function serializeMessage(message: ModelChatMessage): Record<string, unknown> {
+  if (message.role === "assistant") {
+    return {
+      role: "assistant",
+      content: message.content ?? "",
+      ...(message.toolCalls?.length ? { tool_calls: message.toolCalls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.argumentsJson } })) } : {})
+    };
+  }
+  if (message.role === "tool") {
+    return { role: "tool", tool_call_id: message.toolCallId, ...(message.name ? { name: message.name } : {}), content: message.content };
+  }
+  return { role: message.role, content: message.content };
+}
+
+function normalizeToolCalls(raw: Array<{ id?: string; function?: { name?: string; arguments?: string } }> | undefined): ModelToolCall[] {
+  if (!raw?.length) return [];
+  return raw.map((call, index) => ({
+    id: call.id || `call_${index}`,
+    name: call.function?.name ?? "",
+    argumentsJson: call.function?.arguments ?? "{}"
+  })).filter((call) => call.name);
 }
 
 export async function requestContextSelection(
@@ -143,8 +208,9 @@ async function readStreamingResponse(response: Response, fallbackModel: string, 
   let text = "";
   let model = fallbackModel;
   let usage: ModelResponse["usage"];
-  let receivedBytes = 0;
   let finishReason: string | undefined;
+  const pendingCalls = new Map<number, { id?: string; name?: string; arguments: string }>();
+  let receivedBytes = 0;
   const processLine = (line: string): void => {
     const normalized = line.replace(/\r$/, "");
     if (!normalized.startsWith("data:")) return;
@@ -152,17 +218,32 @@ async function readStreamingResponse(response: Response, fallbackModel: string, 
     if (!payload || payload === "[DONE]") return;
     const chunk = JSON.parse(payload) as {
       model?: string;
-      choices?: Array<{ delta?: { content?: string }; message?: { content?: string }; finish_reason?: string | null }>;
+      choices?: Array<{
+        delta?: {
+          content?: string;
+          tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>;
+        };
+        message?: { content?: string };
+        finish_reason?: string | null;
+      }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
       error?: { message?: string };
     };
     if (chunk.error) throw new Error(chunk.error.message || "Model provider streaming error.");
     model = chunk.model ?? model;
     finishReason = chunk.choices?.[0]?.finish_reason ?? finishReason;
-    const delta = chunk.choices?.[0]?.delta?.content ?? chunk.choices?.[0]?.message?.content;
-    if (typeof delta === "string" && delta) {
-      text += delta;
-      onTextDelta(delta);
+    const delta = chunk.choices?.[0]?.delta ?? (chunk.choices?.[0]?.message?.content ? { content: chunk.choices[0].message.content } : undefined);
+    if (typeof delta?.content === "string" && delta.content) {
+      text += delta.content;
+      onTextDelta(delta.content);
+    }
+    for (const call of delta?.tool_calls ?? []) {
+      const index = typeof call.index === "number" ? call.index : 0;
+      const current = pendingCalls.get(index) ?? { arguments: "" };
+      current.id = call.id ?? current.id;
+      current.name = call.function?.name ?? current.name;
+      current.arguments += call.function?.arguments ?? "";
+      pendingCalls.set(index, current);
     }
     if (chunk.usage) usage = { inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens };
   };
@@ -183,9 +264,14 @@ async function readStreamingResponse(response: Response, fallbackModel: string, 
   }
   buffer += decoder.decode();
   if (buffer.trim()) processLine(buffer);
-  if (!text) throw new Error("Model provider returned no streamed text result.");
+  const indices = [...pendingCalls.keys()].sort((left, right) => left - right);
+  const toolCalls = normalizeToolCalls(indices.map((index) => {
+    const call = pendingCalls.get(index)!;
+    return { id: call.id, function: { name: call.name, arguments: call.arguments } };
+  }));
+  if (!text && !toolCalls.length) throw new Error("Model provider returned no streamed text result.");
   if (finishReason === "length") throw new Error("Model response reached its output limit.");
-  return { text, model, usage };
+  return { text, model, usage, toolCalls: toolCalls.length ? toolCalls : undefined, finishReason };
 }
 
 function contextSelectionSchema(): Record<string, unknown> {

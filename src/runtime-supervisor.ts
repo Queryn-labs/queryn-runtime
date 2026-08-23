@@ -26,6 +26,7 @@ export interface RuntimeInvocation {
   projectPath: string;
   provenanceRunId?: string;
   model?: string;
+  recipient?: "local" | "cloud";
 }
 
 export interface RuntimeInvocationResult {
@@ -67,7 +68,8 @@ export class RuntimeSupervisor extends EventEmitter {
       const structured = await invocation.builtin({
         projectPath: invocation.projectPath, sessionId: invocation.sessionId, jobId: invocation.jobId,
         arguments: invocation.arguments, outboxPath: invocation.outboxPath, signal: invocation.signal, progress: invocation.progress,
-        provenance: { runId: invocation.provenanceRunId ?? invocation.jobId, model: invocation.model }
+        provenance: { runId: invocation.provenanceRunId ?? invocation.jobId, model: invocation.model },
+        recipient: invocation.recipient
       });
       return structured as RuntimeInvocationResult;
     }

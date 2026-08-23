@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rm } from "node:fs/promises";
+import { mkdir, open, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { listArtifacts, listAssets, listNotes, readArtifact, readNote } from "@osnova/project";
 import type { ApprovalDecision, ArtifactDescriptor, ContextEnvelope, ContextLevel } from "@osnova/types";
@@ -33,6 +33,25 @@ export class ContextBroker {
   readonly #providers = new Map<string, CustomContextProvider>();
 
   register(providerId: string, provider: CustomContextProvider): void { this.#providers.set(providerId, provider); }
+
+  async resolveOne(request: { projectPath: string; artifactId: string; level: ContextLevel; budgetTokens: number; recipient: "local" | "cloud"; approval?: ApprovalDecision }): Promise<ContextEnvelope> {
+    const artifact = await readArtifact(request.projectPath, request.artifactId);
+    return this.#resolveArtifact(request.projectPath, artifact, request.level, request.budgetTokens, request.recipient, request.approval);
+  }
+
+  /** Strongest context policy (mode + sensitivity) that covers a project material path. */
+  async describeMaterialPolicy(projectPath: string, relativePath: string): Promise<{ mode: "none" | "automatic" | "declarative" | "custom"; sensitive: boolean }> {
+    const artifacts = await listArtifacts(projectPath);
+    let best: ArtifactDescriptor | undefined;
+    for (const artifact of artifacts) {
+      if (!artifact.payloads.some((payload) => payload.path === relativePath)) continue;
+      if (!best || contextRestriction(artifact) > contextRestriction(best)) best = artifact;
+    }
+    return {
+      mode: best?.context?.mode ?? "automatic",
+      sensitive: best?.metadata?.sensitivity === "sensitive"
+    };
+  }
 
   async preview(projectPath: string, budgetTokens = 1_000): Promise<ContextEnvelope> {
     const [artifacts, notes, allAssets] = await Promise.all([listArtifacts(projectPath), listNotes(projectPath), listAssets(projectPath)]);
@@ -286,9 +305,42 @@ export class ContextBroker {
 
 export class ProjectIndexer {
   readonly #preferSqlite: boolean;
+  readonly #rebuildTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(options: { preferSqlite?: boolean } = {}) {
     this.#preferSqlite = options.preferSqlite ?? true;
+  }
+
+  /** Rebuild the index shortly after writes coalesce; safe to call per write. */
+  scheduleRebuild(projectPath: string, delayMs = 1_500): void {
+    const existing = this.#rebuildTimers.get(projectPath);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.#rebuildTimers.delete(projectPath);
+      void this.rebuild(projectPath).catch(() => undefined);
+    }, delayMs);
+    timer.unref?.();
+    this.#rebuildTimers.set(projectPath, timer);
+  }
+
+  /** Rebuilds the index when any note is newer than the stored index. */
+  async ensureFresh(projectPath: string): Promise<"fresh" | "rebuilt"> {
+    let indexMtime = 0;
+    for (const candidate of ["context.sqlite", "context.json"]) {
+      try { indexMtime = Math.max(indexMtime, (await stat(path.join(projectPath, ".osnova", "index", candidate))).mtimeMs); }
+      catch { /* A missing index means it must be built. */ }
+    }
+    const cutoff = indexMtime + 5;
+    const notes = await listNotes(projectPath);
+    let checked = 0;
+    for (const note of notes) {
+      if (checked++ > 400) return "fresh";
+      let mtime = 0;
+      try { mtime = (await stat(path.join(projectPath, note.relativePath))).mtimeMs; }
+      catch { continue; }
+      if (mtime > cutoff) { await this.rebuild(projectPath); return "rebuilt"; }
+    }
+    return "fresh";
   }
 
   async rebuild(projectPath: string): Promise<{ indexed: number; engine: "sqlite-fts5" | "portable" }> {
@@ -317,10 +369,13 @@ export class ProjectIndexer {
   }
 
   async search(projectPath: string, query: string, limit = 20): Promise<Array<{ id: string; kind: string; title: string; snippet: string }>> {
+    await this.ensureFresh(projectPath).catch(() => undefined);
     if (this.#preferSqlite) {
       try {
+        const indexPath = path.join(projectPath, ".osnova", "index", "context.sqlite");
+        await stat(indexPath);
         const { DatabaseSync } = await import("node:sqlite");
-        const db = new DatabaseSync(path.join(projectPath, ".osnova", "index", "context.sqlite"), { readOnly: true });
+        const db = new DatabaseSync(indexPath, { readOnly: true });
         try {
           return db.prepare("SELECT id, kind, title, snippet(documents, 3, '[', ']', '…', 20) AS snippet FROM documents WHERE documents MATCH ? LIMIT ?")
             .all(query, limit) as Array<{ id: string; kind: string; title: string; snippet: string }>;
@@ -329,10 +384,15 @@ export class ProjectIndexer {
         // Fall through to the index built for runtimes without SQLite FTS5.
       }
     }
-    const portablePath = path.join(projectPath, ".osnova", "index", "context.json");
-    const parsed = JSON.parse(await readFile(portablePath, "utf8")) as { version?: unknown; documents?: unknown };
-    if (parsed.version !== 1 || !Array.isArray(parsed.documents)) throw new Error("Portable project index is invalid; rebuild it.");
-    return searchPortableIndex(parsed.documents as IndexDocument[], query, limit);
+    try {
+      const portablePath = path.join(projectPath, ".osnova", "index", "context.json");
+      const parsed = JSON.parse(await readFile(portablePath, "utf8")) as { version?: unknown; documents?: unknown };
+      if (parsed.version !== 1 || !Array.isArray(parsed.documents)) throw new Error("Portable project index is invalid; rebuild it.");
+      return searchPortableIndex(parsed.documents as IndexDocument[], query, limit);
+    } catch {
+      // A project without any built index simply has no searchable material yet.
+      return [];
+    }
   }
 }
 
@@ -470,6 +530,13 @@ async function readTextPrefix(filePath: string, maxBytes: number): Promise<strin
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
     return buffer.subarray(0, bytesRead).toString("utf8");
   } finally { await handle.close(); }
+}
+
+/** Reads a bounded text prefix of any project material outside the broker envelope path. */
+export async function readTextPrefixForMaterial(projectPath: string, relativePath: string, maxChars = 8_000): Promise<{ text: string; truncated: boolean }> {
+  const filePath = await resolveSafeExistingFile(projectPath, relativePath, "Project material");
+  const text = await readTextPrefix(filePath, maxChars * 4 + 1);
+  return text.length > maxChars ? { text: `${text.slice(0, maxChars)}…`, truncated: true } : { text, truncated: false };
 }
 
 function normalizeCustomEnvelope(

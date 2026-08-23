@@ -23,6 +23,7 @@ export interface InvokeOperationInput {
   approval?: ApprovalDecision;
   provenanceRunId?: string;
   model?: string;
+  recipient?: "local" | "cloud";
 }
 
 interface PendingInvocation { input: InvokeOperationInput; jobId: string }
@@ -148,7 +149,8 @@ export class OperationService {
         progress: (value, message) => { void this.jobs.progress(jobId, value, message); },
         builtin: this.operations.getBuiltinHandler(input.operationId),
         provenanceRunId: input.provenanceRunId,
-        model: input.model
+        model: input.model,
+        recipient: input.recipient
       });
       this.operations.validateOutput(input.operationId, result.structured ?? {}, extensionVersions);
       if ((result.artifacts?.length ?? 0) > 0 && !input.publishArtifacts) {
@@ -193,7 +195,7 @@ export class OperationService {
   }
 
   #evaluate(projectPath: string, extensionId: string, operation: ReturnType<OperationRegistry["get"]>["definition"], approval?: ApprovalDecision): PolicyEvaluation {
-    if (extensionId === "osnova.builtin") {
+    if (extensionId === "osnova.builtin" || extensionId.startsWith("osnova.mcp.")) {
       const approvalRequired = ["network-egress", "external-side-effect", "privileged"].includes(operation.risk) && !approval?.approved;
       return { allowed: true, approvalRequired, missingPermissions: [] };
     }

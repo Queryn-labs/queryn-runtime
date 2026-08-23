@@ -1,16 +1,19 @@
 import os from "node:os";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
-import { createNote, createArtifactRelation, importAsset, registerExistingArtifact } from "@osnova/project";
+import { createNote, createArtifactRelation, importAsset, listArtifacts, listAssets, listNotes, readNote, registerExistingArtifact } from "@osnova/project";
 import type { ApprovalDecision, OperationDefinition, RuntimeDescriptor } from "@osnova/types";
+import { AgentKernel } from "./agent-kernel.js";
 import { AgentOrchestrator } from "./agent-orchestrator.js";
 import { ArtifactIngestor } from "./artifact-ingestor.js";
 import { ConnectorEngine } from "./connector-engine.js";
-import { ContextBroker, ProjectIndexer } from "./context-broker.js";
+import { ContextBroker, ProjectIndexer, readTextPrefixForMaterial } from "./context-broker.js";
+import { resolveSafeExistingFile } from "./atomic.js";
 import { createSystemCredentialStore } from "./credential-store.js";
 import { DiagnosticsService } from "./diagnostics.js";
 import { ExtensionManager } from "./extension-manager.js";
 import { JobManager } from "./job-manager.js";
+import { McpBridge, type McpServerDescriptor } from "./mcp-bridge.js";
 import { ModelManager } from "./model-manager.js";
 import { OpenAICompatibleProvider } from "./model-provider.js";
 import { OperationRegistry } from "./operation-registry.js";
@@ -43,6 +46,8 @@ export class OsnovaRuntime {
   readonly credentials;
   readonly operations: OperationService;
   readonly agent: AgentOrchestrator;
+  readonly agentKernel: AgentKernel;
+  readonly mcp = new McpBridge();
   readonly diagnostics: DiagnosticsService;
 
   constructor(readonly dataRoot = defaultRuntimeDataRoot()) {
@@ -52,7 +57,8 @@ export class OsnovaRuntime {
     this.models = new ModelManager(dataRoot);
     this.credentials = createSystemCredentialStore(dataRoot);
     this.operations = new OperationService(dataRoot, this.projects, this.registry, this.policy, this.jobs, this.supervisor, this.ingestor, this.models);
-    this.agent = new AgentOrchestrator(dataRoot, this.registry, this.context, this.operations, this.jobs);
+    this.agentKernel = new AgentKernel(dataRoot, this.registry, this.operations, this.jobs, this.context, this.indexer);
+    this.agent = new AgentOrchestrator(dataRoot, this.registry, this.context, this.operations, this.jobs, this.agentKernel);
     this.extensions = new ExtensionManager(dataRoot, this.registry, this.policy, this.context, this.connectors, this.supervisor, this.models, this.agent, this.projects);
     this.diagnostics = new DiagnosticsService(dataRoot, this.extensions, this.models, this.jobs);
     registerBuiltins(this);
@@ -110,6 +116,22 @@ export class OsnovaRuntime {
     await this.models.remove(sha256, await this.extensions.modelDependents(sha256));
   }
 
+  /** Connects a stdio MCP server and exposes its tools to agents and RPC. */
+  async registerMcpServer(descriptor: McpServerDescriptor): Promise<{ id: string; tools: string[] }> {
+    const { tools } = await this.mcp.connect(descriptor);
+    this.mcp.registerInto(this.registry, descriptor, tools);
+    return { id: descriptor.id, tools: tools.map((tool) => tool.name) };
+  }
+
+  async unregisterMcpServer(serverId: string): Promise<void> {
+    await this.mcp.disconnect(serverId);
+  }
+
+  async shutdown(): Promise<void> {
+    await this.supervisor.stop();
+    await this.mcp.shutdown();
+  }
+
   status() {
     return {
       name: "osnova-runtime" as const, version: "0.2.0", status: "ready" as const,
@@ -130,8 +152,6 @@ export class OsnovaRuntime {
     } finally { await removeInvocationDirectories(directories.root); }
   }
 
-  async shutdown(): Promise<void> { await this.supervisor.stop(); }
-
   #registerModelProvider(config: ModelProviderConfig): void {
     if (config.type === "openai-compatible") this.agent.registerProvider(new OpenAICompatibleProvider(config.id, config.endpoint, this.credentials, config.credentialAccount));
   }
@@ -146,6 +166,89 @@ export function defaultRuntimeDataRoot(): string {
 
 function registerBuiltins(runtime: OsnovaRuntime): void {
   register(runtime, {
+    id: "osnova.project.search", toolId: "osnova.project", version: "1.0.0", title: "Search project materials",
+    description: "Full-text search across project notes and artifacts. Returns ranked matches with short snippets.",
+    inputSchema: { type: "object", required: ["query"], additionalProperties: false, properties: { query: { type: "string", minLength: 1 }, limit: { type: "integer", minimum: 1, maximum: 20 } } },
+    outputSchema: { type: "object", required: ["matches"], properties: { matches: { type: "array" }, engine: { type: "string" } } },
+    risk: "safe-read", agentVisibility: "automatic", execution: "immediate", cancellable: false, idempotent: true,
+    permissions: ["project:read"]
+  }, async ({ projectPath, arguments: args }) => {
+    const matches = await runtime.indexer.search(projectPath, String(args.query), typeof args.limit === "number" ? args.limit : 10);
+    return { structured: { matches } };
+  });
+
+  register(runtime, {
+    id: "osnova.project.read", toolId: "osnova.project", version: "1.0.0", title: "Read project material",
+    description: "Read the content of one note or text file by its project-relative path. Respects the material's context policy and sensitivity.",
+    inputSchema: { type: "object", required: ["path"], additionalProperties: false, properties: { path: { type: "string", minLength: 1 }, maxChars: { type: "integer", minimum: 500, maximum: 20_000 } } },
+    outputSchema: { type: "object", required: ["content"], properties: { content: { type: "string" }, truncated: { type: "boolean" }, sensitivity: { type: "string" } } },
+    risk: "safe-read", agentVisibility: "automatic", execution: "immediate", cancellable: false, idempotent: true,
+    permissions: ["project:read"]
+  }, async ({ projectPath, arguments: args, recipient }) => {
+    const relativePath = String(args.path);
+    const policy = await runtime.context.describeMaterialPolicy(projectPath, relativePath);
+    if (policy.mode === "none") {
+      return { structured: { content: "", message: "This material is excluded from agent context by its policy.", sensitivity: policy.sensitive ? "sensitive" : "project" } };
+    }
+    if (policy.sensitive && recipient === "cloud") {
+      throw new Error("Material is marked sensitive and cannot be read into a cloud model context.");
+    }
+    const maxChars = typeof args.maxChars === "number" ? args.maxChars : 8_000;
+    try {
+      const note = await readNote(projectPath, relativePath);
+      const body = note.body.length > maxChars ? `${note.body.slice(0, maxChars)}…` : note.body;
+      return { structured: { path: relativePath, title: note.summary.title, content: body, truncated: note.body.length > maxChars, sensitivity: policy.sensitive ? "sensitive" : "project" } };
+    } catch {
+      const asset = (await listAssets(projectPath)).find((candidate) => candidate.relativePath === relativePath);
+      if (!asset) throw new Error(`Project material not found: ${relativePath}`);
+      const mediaType = asset.mediaType ?? "";
+      const isText = mediaType.startsWith("text/") || /\.(?:md|txt|c|cc|cpp|css|csv|go|h|hpp|html|ini|java|js|jsx|kt|log|mjs|py|rb|rs|sh|sql|svg|toml|ts|tsx|xml|ya?ml)$/i.test(relativePath);
+      if (!isText) return { structured: { path: relativePath, name: asset.name, content: `Binary file (${mediaType || "unknown"}, ${asset.size} bytes); text preview unavailable.`, truncated: false, sensitivity: policy.sensitive ? "sensitive" : "project" } };
+      const limited = await readTextPrefixForMaterial(projectPath, relativePath, maxChars);
+      return { structured: { path: relativePath, name: asset.name, content: limited.text, truncated: limited.truncated, sensitivity: policy.sensitive ? "sensitive" : "project" } };
+    }
+  });
+
+  register(runtime, {
+    id: "osnova.project.list", toolId: "osnova.project", version: "1.0.0", title: "List project materials",
+    description: "List notes, files and registered artifacts with titles and project-relative paths.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+    outputSchema: { type: "object", required: ["items"], properties: { items: { type: "array" } } },
+    risk: "safe-read", agentVisibility: "automatic", execution: "immediate", cancellable: false, idempotent: true,
+    permissions: ["project:read"]
+  }, async ({ projectPath }) => {
+    const [notes, assets, artifacts] = await Promise.all([listNotes(projectPath), listAssets(projectPath), listArtifacts(projectPath)]);
+    const items = [
+      ...notes.slice(0, 200).map((note) => ({ kind: "note", title: note.title, path: note.relativePath })),
+      ...assets.slice(0, 150).map((asset) => ({ kind: "file", title: asset.name, path: asset.relativePath })),
+      ...artifacts.slice(0, 100).map((artifact) => ({ kind: "artifact", title: artifact.title ?? artifact.id, artifactId: artifact.id }))
+    ];
+    return { structured: { counts: { notes: notes.length, files: assets.length, artifacts: artifacts.length }, items } };
+  });
+
+  register(runtime, {
+    id: "osnova.artifact.resolve", toolId: "osnova.project", version: "1.0.0", title: "Resolve artifact context",
+    description: "Resolve one registered artifact into readable context, honoring its context mode (automatic/declarative/custom providers).",
+    inputSchema: { type: "object", required: ["artifactId"], additionalProperties: false, properties: { artifactId: { type: "string", minLength: 1 }, level: { type: "string", enum: ["compact", "expanded"] }, budgetTokens: { type: "integer", minimum: 256, maximum: 32_000 } } },
+    outputSchema: { type: "object", required: ["text"], properties: { text: { type: "string" }, truncated: { type: "boolean" }, sensitivity: { type: "string" } } },
+    risk: "safe-read", agentVisibility: "automatic", execution: "immediate", cancellable: false, idempotent: true,
+    permissions: ["project:read", "artifact:read"]
+  }, async ({ projectPath, arguments: args, recipient }) => {
+    const envelope = await runtime.context.resolveOne({
+      projectPath,
+      artifactId: String(args.artifactId),
+      level: args.level === "compact" ? "compact" : "expanded",
+      budgetTokens: typeof args.budgetTokens === "number" ? args.budgetTokens : 4_000,
+      recipient: recipient ?? "local"
+    });
+    if (!envelope.allowedRecipients.includes(recipient ?? "local")) {
+      throw new Error(`Artifact cannot be resolved for recipient ${recipient ?? "local"}.`);
+    }
+    return { structured: { artifactId: String(args.artifactId), text: envelope.text ?? "", sources: envelope.sources, truncated: envelope.truncated, sensitivity: envelope.sensitivity } };
+  });
+
+  register(runtime, {
+
     id: "osnova.notes.create", toolId: "osnova.notes", version: "1.0.0", title: "Create note",
     description: "Create a Markdown note inside the project and register it as an artifact.",
     inputSchema: { type: "object", required: ["title"], additionalProperties: false, properties: { title: { type: "string", minLength: 1 }, body: { type: "string" }, folder: { type: "string" }, tags: { type: "array", items: { type: "string" } } } },

@@ -135,6 +135,14 @@ async function dispatch(runtime: OsnovaRuntime, method: string, params: Record<s
     case "connector.list": return runtime.connectors.list();
     case "connector.sync": return runtime.syncConnector(projectPath(), requiredString(params, "connectorId"), params.approval as ApprovalDecision | undefined);
     case "agent.plan": return runtime.agent.plan({ projectPath: projectPath(), goal: requiredString(params, "goal"), sessionId: optionalString(params.sessionId), providerId: optionalString(params.providerId), model: optionalString(params.model), draft: params.draft as never, maxSteps: optionalNumber(params.maxSteps), maxDurationSeconds: optionalNumber(params.maxDurationSeconds), contextBudgetTokens: optionalNumber(params.contextBudgetTokens), recipientApproval: params.recipientApproval as never, providerApproval: params.providerApproval as ApprovalDecision | undefined, requestId: optionalString(params.requestId) });
+    case "agent.chat": return runtime.agent.chat({ projectPath: projectPath(), goal: requiredString(params, "goal"), sessionId: optionalString(params.sessionId), providerId: optionalString(params.providerId), model: requiredString(params, "model"), maxSteps: optionalNumber(params.maxSteps), maxDurationSeconds: optionalNumber(params.maxDurationSeconds), historyBudgetTokens: optionalNumber(params.historyBudgetTokens), recipientApproval: params.recipientApproval as never, requestId: optionalString(params.requestId) });
+    case "agent.chat.cancel": return { cancelled: runtime.agent.cancelChat(requiredString(params, "requestId")) };
+    case "agent.chat.get": return runtime.agent.getChat(requiredString(params, "runId"));
+    case "agent.chat.resume": return runtime.agent.resumeChat(requiredString(params, "runId"));
+    case "agent.chat.approve": return runtime.agent.approveChat(requiredString(params, "runId"), params.decision as unknown as ApprovalDecision);
+    case "mcp.server.register": return runtime.registerMcpServer(params.descriptor as never);
+    case "mcp.server.list": return runtime.mcp.listServers();
+    case "mcp.server.unregister": await runtime.unregisterMcpServer(requiredString(params, "id")); return { ok: true };
     case "agent.plan.cancel": return { cancelled: runtime.agent.cancelPlanning(requiredString(params, "requestId")) };
     case "agent.get": return runtime.agent.get(requiredString(params, "runId"));
     case "agent.execute": return runtime.agent.execute(requiredString(params, "runId"));

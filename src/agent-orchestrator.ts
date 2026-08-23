@@ -5,6 +5,7 @@ import path from "node:path";
 import { appendSessionEvent, readSession } from "@osnova/project";
 import type { AgentPlan, AgentStep, ApprovalDecision, ContextSource, JobDescriptor } from "@osnova/types";
 import { writeJsonAtomic } from "./atomic.js";
+import type { AgentKernel, ChatRun } from "./agent-kernel.js";
 import type { ContextBroker } from "./context-broker.js";
 import type { JobManager } from "./job-manager.js";
 import type { ModelProvider } from "./model-provider.js";
@@ -52,6 +53,19 @@ export interface CreatePlanInput {
   requestId?: string;
 }
 
+export interface CreateChatInput {
+  projectPath: string;
+  goal: string;
+  sessionId?: string;
+  providerId?: string;
+  model?: string;
+  maxSteps?: number;
+  maxDurationSeconds?: number;
+  historyBudgetTokens?: number;
+  recipientApproval?: { recipient: "cloud"; approved: boolean; decidedAt: string };
+  requestId?: string;
+}
+
 export interface AgentOutputDelta {
   requestId: string;
   projectPath: string;
@@ -83,8 +97,13 @@ export class AgentOrchestrator extends EventEmitter {
     readonly registry: OperationRegistry,
     readonly context: ContextBroker,
     readonly operations: OperationService,
-    readonly jobs: JobManager
-  ) { super(); }
+    readonly jobs: JobManager,
+    readonly kernel: AgentKernel
+  ) {
+    super();
+    kernel.on("activity", (event) => this.emit("activity", event));
+    kernel.on("output.delta", (event) => this.emit("output.delta", event));
+  }
 
   registerProvider(provider: ModelProvider): void { this.#providers.set(provider.id, provider); }
   listProviders(): Array<{ id: string; recipient: "local" | "cloud"; sourceExtensionId?: string; permissions: string[]; risk: string }> {
@@ -112,6 +131,62 @@ export class AgentOrchestrator extends EventEmitter {
     return true;
   }
 
+  /** Tool-loop engine: one conversational agent turn per user message. */
+  async chat(input: CreateChatInput): Promise<ChatRun> {
+    const provider = input.providerId ? this.#providers.get(input.providerId) : undefined;
+    const model = input.model;
+    if (!provider || !model) throw new Error("Agent chat requires a configured model provider and model.");
+    await this.#authorizeProviderUse(input, provider);
+    return this.kernel.start(provider, { ...input, model });
+  }
+
+  cancelChat(requestId: string): boolean { return this.kernel.cancel(requestId); }
+
+  async getChat(runId: string): Promise<ChatRun> { return this.kernel.get(runId); }
+
+  async resumeChat(runId: string): Promise<ChatRun> {
+    const run = await this.kernel.get(runId);
+    const provider = this.#providers.get(run.providerId);
+    if (!provider) throw new Error(`Model provider is not configured anymore: ${run.providerId}`);
+    return this.kernel.resume(provider, runId);
+  }
+
+  async approveChat(runId: string, decision: ApprovalDecision): Promise<ChatRun> {
+    const run = await this.kernel.get(runId);
+    if (run.status !== "waiting-approval" || !run.pendingJobId) throw new Error(`Chat run is not waiting for approval: ${runId}`);
+    await this.operations.decide(run.pendingJobId, { ...decision, planId: run.id, stepId: run.pendingJobId });
+    const provider = this.#providers.get(run.providerId);
+    if (!provider) throw new Error(`Model provider is not configured anymore: ${run.providerId}`);
+    return this.kernel.resume(provider, runId);
+  }
+
+  async #authorizeProviderUse(
+    input: { projectPath: string; sessionId?: string; recipientApproval?: { recipient: "cloud"; approved: boolean; decidedAt: string }; providerApproval?: ApprovalDecision },
+    provider: ModelProvider
+  ): Promise<void> {
+    if (!provider.sourceExtensionId) return;
+    const connected = this.operations.projects.get(input.projectPath).manifest.extensions?.some((extension) => extension.id === provider.sourceExtensionId && extension.enabled !== false);
+    if (!connected) throw new Error(`Model provider extension is not connected to this project: ${provider.sourceExtensionId}`);
+    const evaluation = this.operations.policy.evaluate(input.projectPath, provider.sourceExtensionId, {
+      id: provider.id, toolId: provider.id, version: "1", title: provider.id, inputSchema: {}, outputSchema: {},
+      permissions: provider.permissions ?? [], risk: provider.risk ?? "safe-read", agentVisibility: "hidden", execution: "immediate"
+    });
+    if (!evaluation.allowed) throw new Error(`${evaluation.reason} Missing: ${evaluation.missingPermissions.join(", ")}`);
+    const cloudApproval = provider.recipient === "cloud" && input.recipientApproval?.approved;
+    if (evaluation.approvalRequired && !(input.providerApproval?.approved || cloudApproval)) throw new Error(`Model provider ${provider.id} requires explicit runtime approval.`);
+    if (input.providerApproval) {
+      await this.operations.policy.rememberApproval(input.projectPath, provider.id, input.providerApproval);
+      if (input.sessionId) await appendSessionEvent(input.projectPath, input.sessionId, {
+        type: "approval", data: {
+          kind: "model-provider-runtime", providerId: provider.id,
+          permissions: provider.permissions ?? [], risk: provider.risk ?? "safe-read",
+          approved: input.providerApproval.approved, scope: input.providerApproval.scope,
+          decidedAt: input.providerApproval.decidedAt
+        }
+      });
+    }
+  }
+
   async #plan(input: CreatePlanInput, requestId: string, cancellationSignal: AbortSignal): Promise<AgentRun> {
     const maxSteps = Math.min(Math.max(input.maxSteps ?? 12, 1), 50);
     const maxDurationSeconds = Math.min(Math.max(input.maxDurationSeconds ?? 1_800, 1), 86_400);
@@ -132,28 +207,7 @@ export class AgentOrchestrator extends EventEmitter {
     } else {
       const provider = input.providerId ? this.#providers.get(input.providerId) : undefined;
       if (!provider || !input.model) throw new Error("Agent planning requires a configured model provider and model, or an explicit draft plan.");
-      if (provider.sourceExtensionId) {
-        const connected = this.operations.projects.get(input.projectPath).manifest.extensions?.some((extension) => extension.id === provider.sourceExtensionId && extension.enabled !== false);
-        if (!connected) throw new Error(`Model provider extension is not connected to this project: ${provider.sourceExtensionId}`);
-        const evaluation = this.operations.policy.evaluate(input.projectPath, provider.sourceExtensionId, {
-          id: provider.id, toolId: provider.id, version: "1", title: provider.id, inputSchema: {}, outputSchema: {},
-          permissions: provider.permissions ?? [], risk: provider.risk ?? "safe-read", agentVisibility: "hidden", execution: "immediate"
-        });
-        if (!evaluation.allowed) throw new Error(`${evaluation.reason} Missing: ${evaluation.missingPermissions.join(", ")}`);
-        const cloudApproval = provider.recipient === "cloud" && input.recipientApproval?.approved;
-        if (evaluation.approvalRequired && !(input.providerApproval?.approved || cloudApproval)) throw new Error(`Model provider ${provider.id} requires explicit runtime approval.`);
-        if (input.providerApproval) {
-          await this.operations.policy.rememberApproval(input.projectPath, provider.id, input.providerApproval);
-          if (input.sessionId) await appendSessionEvent(input.projectPath, input.sessionId, {
-            type: "approval", data: {
-              kind: "model-provider-runtime", providerId: provider.id,
-              permissions: provider.permissions ?? [], risk: provider.risk ?? "safe-read",
-              approved: input.providerApproval.approved, scope: input.providerApproval.scope,
-              decidedAt: input.providerApproval.decidedAt
-            }
-          });
-        }
-      }
+      await this.#authorizeProviderUse(input, provider);
       if (provider.recipient === "cloud" && !(input.recipientApproval?.approved && input.recipientApproval.recipient === "cloud")) {
         throw new Error("Cloud model planning requires explicit data-recipient approval.");
       }
