@@ -3,7 +3,7 @@ import { chmod, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { appendSessionEvent, createSession, listArtifacts, listSessions, readArtifact, readSessionEvents, registerExistingArtifact } from "@osnova/project";
+import { appendSessionEvent, createSession, listArtifacts, listSessions, readArtifact, readSessionEvents, registerExistingArtifact, updateSession } from "@osnova/project";
 import type { ApprovalDecision } from "@osnova/types";
 import type { OsnovaRuntime } from "./runtime.js";
 import { writeJsonAtomic } from "./atomic.js";
@@ -99,6 +99,8 @@ async function dispatch(runtime: OsnovaRuntime, method: string, params: Record<s
     case "project.open": return runtime.openProject(projectPath());
     case "project.validate": return runtime.projects.validate(projectPath());
     case "project.migrate": return runtime.projects.migrate(projectPath(), { dryRun: params.dryRun === true });
+    case "project.inspect-adoption": return runtime.projects.inspectAdoption(projectPath());
+    case "project.adopt": return runtime.projects.adopt(projectPath(), { id: optionalString(params.id), name: optionalString(params.name), description: optionalString(params.description) }, { dryRun: params.dryRun === true });
     case "extension.install": return runtime.extensions.install(requiredString(params, "packagePath"), {
       allowUnsigned: params.allowUnsigned === true, signature: optionalString(params.signature), publicKey: optionalString(params.publicKey)
     });
@@ -126,6 +128,7 @@ async function dispatch(runtime: OsnovaRuntime, method: string, params: Record<s
     case "artifact.list": return listArtifacts(projectPath());
     case "session.create": return createSession(runtime.projects.get(projectPath()), { title: requiredString(params, "title"), goal: optionalString(params.goal), context: params.context as never });
     case "session.append": return appendSessionEvent(projectPath(), requiredString(params, "sessionId"), { type: requiredString(params, "type") as never, data: record(params.data) });
+    case "session.update": return updateSession(projectPath(), requiredString(params, "sessionId"), sessionUpdatePatch(params));
     case "session.list": return listSessions(projectPath());
     case "session.events": return readSessionEvents(projectPath(), requiredString(params, "sessionId"));
     case "context.preview": return runtime.context.preview(projectPath());
@@ -134,20 +137,11 @@ async function dispatch(runtime: OsnovaRuntime, method: string, params: Record<s
     case "context.search": return runtime.indexer.search(projectPath(), requiredString(params, "query"), optionalNumber(params.limit));
     case "connector.list": return runtime.connectors.list();
     case "connector.sync": return runtime.syncConnector(projectPath(), requiredString(params, "connectorId"), params.approval as ApprovalDecision | undefined);
-    case "agent.plan": return runtime.agent.plan({ projectPath: projectPath(), goal: requiredString(params, "goal"), sessionId: optionalString(params.sessionId), providerId: optionalString(params.providerId), model: optionalString(params.model), draft: params.draft as never, maxSteps: optionalNumber(params.maxSteps), maxDurationSeconds: optionalNumber(params.maxDurationSeconds), contextBudgetTokens: optionalNumber(params.contextBudgetTokens), recipientApproval: params.recipientApproval as never, providerApproval: params.providerApproval as ApprovalDecision | undefined, requestId: optionalString(params.requestId) });
     case "agent.chat": return runtime.agent.chat({ projectPath: projectPath(), goal: requiredString(params, "goal"), sessionId: optionalString(params.sessionId), providerId: optionalString(params.providerId), model: requiredString(params, "model"), maxSteps: optionalNumber(params.maxSteps), maxDurationSeconds: optionalNumber(params.maxDurationSeconds), historyBudgetTokens: optionalNumber(params.historyBudgetTokens), recipientApproval: params.recipientApproval as never, requestId: optionalString(params.requestId) });
     case "agent.chat.cancel": return { cancelled: runtime.agent.cancelChat(requiredString(params, "requestId")) };
     case "agent.chat.get": return runtime.agent.getChat(requiredString(params, "runId"));
     case "agent.chat.resume": return runtime.agent.resumeChat(requiredString(params, "runId"));
     case "agent.chat.approve": return runtime.agent.approveChat(requiredString(params, "runId"), params.decision as unknown as ApprovalDecision);
-    case "mcp.server.register": return runtime.registerMcpServer(params.descriptor as never);
-    case "mcp.server.list": return runtime.mcp.listServers();
-    case "mcp.server.unregister": await runtime.unregisterMcpServer(requiredString(params, "id")); return { ok: true };
-    case "agent.plan.cancel": return { cancelled: runtime.agent.cancelPlanning(requiredString(params, "requestId")) };
-    case "agent.get": return runtime.agent.get(requiredString(params, "runId"));
-    case "agent.execute": return runtime.agent.execute(requiredString(params, "runId"));
-    case "agent.approve": return runtime.agent.approve(requiredString(params, "runId"), requiredString(params, "stepId"), params.decision as unknown as ApprovalDecision);
-    case "agent.cancel": return runtime.agent.cancel(requiredString(params, "runId"));
     case "job.get": return runtime.jobs.get(requiredString(params, "jobId"));
     case "job.list": return runtime.jobs.list(optionalString(params.projectPath));
     case "job.cancel": return runtime.jobs.cancel(requiredString(params, "jobId"));
@@ -176,6 +170,19 @@ function createRpcAddress(): string { return process.platform === "win32" ? `\\\
 function requiredString(params: Record<string, unknown>, key: string): string { const value = params[key]; if (typeof value !== "string" || !value) throw new Error(`${key} is required.`); return value; }
 function optionalString(value: unknown): string | undefined { return typeof value === "string" ? value : undefined; }
 function optionalNumber(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) ? value : undefined; }
+
+function sessionUpdatePatch(params: Record<string, unknown>): { title?: string; goal?: string; memoryMode?: "full" | "off" } {
+  const patch: { title?: string; goal?: string; memoryMode?: "full" | "off" } = {};
+  const title = optionalString(params.title);
+  const goal = optionalString(params.goal);
+  if (title !== undefined) patch.title = title;
+  if (goal !== undefined) patch.goal = goal;
+  if (params.memoryMode !== undefined) {
+    if (params.memoryMode !== "full" && params.memoryMode !== "off") throw new Error("memoryMode must be \"full\" or \"off\".");
+    patch.memoryMode = params.memoryMode;
+  }
+  return patch;
+}
 function stringArray(value: unknown): string[] | undefined { return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : undefined; }
 function numberArray(value: unknown): number[] | undefined { return Array.isArray(value) ? value.filter((entry): entry is number => typeof entry === "number") : undefined; }
 function record(value: unknown): Record<string, unknown> { if (typeof value !== "object" || value === null || Array.isArray(value)) return {}; return value as Record<string, unknown>; }

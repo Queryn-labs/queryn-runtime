@@ -1,6 +1,6 @@
 # osnova-runtime
 
-Локальный control plane Osnova Reborn. Он управляет проектами, расширениями, операциями, заданиями, контекстом, моделями и агентными планами. AI и OCI являются опциональными возможностями: проект открывается и остаётся полезным без них.
+Локальный control plane Osnova Reborn. Он управляет проектами, расширениями, операциями, заданиями, контекстом, моделями и диалоговым агентом с инструментами. AI и OCI являются опциональными возможностями: проект открывается и остаётся полезным без них.
 
 ## Границы
 
@@ -25,7 +25,7 @@ node dist/cli.js help
 Запуск `serve` печатает JSON с адресом сокета и токеном. Эти данные предназначены для desktop main process или headless-клиента, а не для renderer.
 
 Одноразовый CLI покрывает проекты, миграции, extensions, sessions, operations,
-approvals, artifacts, context, connectors, models, agent runs и jobs. Pending
+approvals, artifacts, context, connectors, models и jobs. Pending
 approval и непубликованные outbox candidates сохраняются между запусками CLI.
 Секрет model provider передаётся только через `--secret-stdin`, а не аргументом
 процесса.

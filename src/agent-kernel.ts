@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { appendSessionEvent, readSession, readSessionEvents } from "@osnova/project";
+import { appendSessionEvent, listSessions, readSession, readSessionEvents } from "@osnova/project";
 import type { JobDescriptor } from "@osnova/types";
 import { writeJsonAtomic } from "./atomic.js";
 import type { ContextBroker } from "./context-broker.js";
@@ -69,6 +69,7 @@ export interface AgentKernelActivity {
   title: string;
   detail?: string;
   operationId?: string;
+  callId?: string;
   jobId?: string;
   durationMs?: number;
 }
@@ -196,7 +197,8 @@ export class AgentKernel extends EventEmitter {
         trimHistoryToBudget(messages, run.historyBudgetTokens);
         const finalizing = run.steps >= run.maxSteps - 1;
         if (finalizing) messages.push({ role: "system", content: "You have reached the step limit. Do not call any tools. Write your final answer now." });
-        const tools = finalizing ? undefined : await this.#toolSchemas(run.projectPath);
+        const memoryMode = await this.#sessionMemoryMode(run);
+        const tools = finalizing ? undefined : await this.#toolSchemas(run.projectPath, memoryMode);
         let response;
         try {
           response = await provider.complete({
@@ -215,6 +217,12 @@ export class AgentKernel extends EventEmitter {
         }
         run.steps += 1;
         if (response.toolCalls?.length && !finalizing) {
+          if (run.sessionId && response.text?.trim()) {
+            await appendSessionEvent(run.projectPath, run.sessionId, {
+              type: "assistant-message",
+              data: { content: response.text, providerId: run.providerId, model: run.model, interim: true }
+            });
+          }
           let suspended = false;
           for (const call of response.toolCalls) {
             if (cancellationSignal.aborted) throw new Error("Agent response was cancelled.");
@@ -288,7 +296,7 @@ export class AgentKernel extends EventEmitter {
     }
 
     const phrase = describeToolCall(definition, parsedArguments);
-    this.#activity(run, { kind: "tool", status: "running", title: phrase.title, detail: phrase.detail, operationId: call.name });
+    this.#activity(run, { kind: "tool", status: "running", title: phrase.title, detail: phrase.detail, operationId: call.name, callId });
 
     // The assistant turn must exist in the log before its observation is appended.
     await appendSessionEvent(run.projectPath, run.sessionId!, {
@@ -311,7 +319,7 @@ export class AgentKernel extends EventEmitter {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       await this.#appendObservationEvent(run, callId, call.name, { ok: false, content: `Tool could not start: ${reason}`, artifactIds: [] });
-      this.#activity(run, { kind: "tool", status: "failed", title: phrase.title, detail: reason, operationId: call.name, durationMs: Date.now() - startedAt });
+      this.#activity(run, { kind: "tool", status: "failed", title: phrase.title, detail: reason, operationId: call.name, callId, durationMs: Date.now() - startedAt });
       return false;
     }
 
@@ -319,7 +327,7 @@ export class AgentKernel extends EventEmitter {
       run.pendingJobId = job.id;
       run.pendingCallId = callId;
       run.pendingOperationId = call.name;
-      this.#activity(run, { kind: "tool", status: "running", title: phrase.title, detail: phrase.detail, operationId: call.name, jobId: job.id });
+      this.#activity(run, { kind: "tool", status: "running", title: phrase.title, detail: phrase.detail, operationId: call.name, callId, jobId: job.id });
       return true;
     }
 
@@ -333,14 +341,14 @@ export class AgentKernel extends EventEmitter {
     await this.#appendObservationEvent(run, callId, operationId, observation);
     const baseTitle = phrase?.title ?? activityTitleForObservation(operationId);
     if (job.status === "succeeded") {
-      this.#activity(run, { kind: "tool", status: "completed", title: baseTitle, operationId, jobId: job.id, durationMs });
+      this.#activity(run, { kind: "tool", status: "completed", title: baseTitle, operationId, callId, jobId: job.id, durationMs });
       // Written material must become searchable without waiting for an explicit reindex.
       const registered = (() => { try { return this.registry.get(operationId, this.operations.projects.extensionVersions(run.projectPath)); } catch { return undefined; } })();
       if (registered && ["project-write", "external-side-effect"].includes(registered.definition.risk)) {
         void this.indexer.rebuild(run.projectPath).catch(() => undefined);
       }
     } else {
-      this.#activity(run, { kind: "tool", status: "failed", title: `${baseTitle} — не удалось`, detail: job.error, operationId, jobId: job.id, durationMs });
+      this.#activity(run, { kind: "tool", status: "failed", title: `${baseTitle} — не удалось`, detail: job.error, operationId, callId, jobId: job.id, durationMs });
     }
   }
 
@@ -396,12 +404,26 @@ export class AgentKernel extends EventEmitter {
     const lines = [
       "You are the Osnova project agent working locally inside the user's knowledge project.",
       "Rules:",
-      "1. Before making claims about project materials, discover them with tools: osnova.project.search / osnova.project.list, then osnova.project.read or osnova.artifact.resolve for specifics.",
-      "2. Modify the project only when the user explicitly asks for changes.",
-      `3. Call ${PROGRESS_TOOL} with {"message": "..."} whenever you switch to a new phase of work. Use a short phrase in the user's language.`,
-      "4. Never invent contents you have not read with a tool.",
-      "5. When you have enough information, stop calling tools and write the final answer in the user's language."
+      "1. Answer greetings, small talk and general-knowledge questions directly without any tools.",
+      "2. Use project tools only when the answer depends on this project's materials. Before stating facts about the project, discover them with tools: osnova.project.search / osnova.project.list, then osnova.project.read or osnova.artifact.resolve for specifics.",
+      "3. Prefer one targeted search over several broad ones; never repeat an identical search.",
+      `4. Call ${PROGRESS_TOOL} with {"message": "..."} whenever you switch to a new phase of work. Use a short phrase in the user's language.`,
+      "5. While working on a multi-step task, occasionally write a short paragraph (before calling the next tool) summarizing what you have established so far and what you will do next, in the user's language.",
+      "6. Modify the project only when the user explicitly asks for changes.",
+      "7. Never invent contents you have not read with a tool.",
+      "8. When you have enough information, stop calling tools and write the final answer in the user's language."
     ];
+    try {
+      const past = (await listSessions(run.projectPath))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .slice(0, 10)
+        .map((session) => `- ${session.title} (${session.id})`)
+        .join("\n");
+      if (past) lines.push(`Past sessions:\n${past}`);
+      if (run.sessionId && (await readSession(run.projectPath, run.sessionId)).memoryMode === "full") {
+        lines.push("Full memory is enabled for this session: you can search past dialogues with osnova.session.search and read them with osnova.session.read.");
+      }
+    } catch { /* A missing session catalog must not break the loop. */ }
     if (run.sessionId) {
       try {
         const session = await readSession(run.projectPath, run.sessionId);
@@ -412,7 +434,7 @@ export class AgentKernel extends EventEmitter {
     return lines.join("\n");
   }
 
-  async #toolSchemas(projectPath: string): Promise<ToolSchema[]> {
+  async #toolSchemas(projectPath: string, memoryMode: "full" | "off"): Promise<ToolSchema[]> {
     const schemas: ToolSchema[] = [{
       name: PROGRESS_TOOL,
       description: "Report progress to the user when you switch to a new phase of work.",
@@ -420,6 +442,7 @@ export class AgentKernel extends EventEmitter {
     }];
     for (const operation of this.#availableOperations(projectPath)) {
       if (operation.definition.agentVisibility !== "automatic") continue;
+      if (operation.definition.id.startsWith("osnova.session.") && memoryMode !== "full") continue;
       schemas.push({
         name: operation.definition.id,
         description: operation.definition.description ?? operation.definition.title,
@@ -427,6 +450,13 @@ export class AgentKernel extends EventEmitter {
       });
     }
     return schemas;
+  }
+
+  async #sessionMemoryMode(run: ChatRun): Promise<"full" | "off"> {
+    if (!run.sessionId) return "off";
+    try {
+      return (await readSession(run.projectPath, run.sessionId)).memoryMode === "full" ? "full" : "off";
+    } catch { return "off"; }
   }
 
   #availableOperations(projectPath: string) {

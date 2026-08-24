@@ -47,13 +47,6 @@ async function main(): Promise<void> {
       await runtime.operations.decide(job.id, approval(job.id, flag("--approve"), optional("--scope")));
       return print(await waitForJob(runtime, job.id, (next) => terminal(next.status)));
     }
-    if (command === "agent:execute" || command === "agent:approve" || command === "agent:cancel") {
-      const run = await runtime.agent.get(required("--run"));
-      await runtime.openProject(run.projectPath);
-      if (command === "agent:cancel") return print(await runtime.agent.cancel(run.id));
-      if (command === "agent:approve") return print(await runtime.agent.approve(run.id, required("--step"), approval(required("--step"), flag("--approve"), optional("--scope"))));
-      return print(await executeAgent(runtime, run.id, flag("--approve-all")));
-    }
 
     const projectPath = required("--project");
     await runtime.openProject(projectPath);
@@ -85,15 +78,6 @@ async function main(): Promise<void> {
       const job = await runtime.syncConnector(projectPath, required("--connector"), flag("--approve") ? approval(required("--connector"), true, optional("--scope")) : undefined);
       return print(await waitForJob(runtime, job.id, (next) => terminal(next.status)));
     }
-    if (command === "agent:plan") return print(await runtime.agent.plan({
-      projectPath, goal: required("--goal"), sessionId: optional("--session"), providerId: optional("--provider"), model: optional("--model"),
-      draft: optional("--draft") ? jsonObject(required("--draft")) as never : undefined,
-      maxSteps: optional("--max-steps") ? Number(required("--max-steps")) : undefined,
-      maxDurationSeconds: optional("--max-duration") ? Number(required("--max-duration")) : undefined,
-      contextBudgetTokens: optional("--budget") ? Number(required("--budget")) : undefined,
-      recipientApproval: flag("--approve-cloud") ? { recipient: "cloud", approved: true, decidedAt: new Date().toISOString() } : undefined,
-      providerApproval: flag("--approve-provider") ? approval(optional("--provider") ?? "model-provider", true, optional("--scope")) : undefined
-    }));
     throw new Error(`Unknown command: ${command}`);
   } finally { await runtime.shutdown(); }
 }
@@ -144,17 +128,8 @@ function waitForJob(runtime: OsnovaRuntime, jobId: string, predicate: (job: Retu
     runtime.jobs.on("changed", changed);
   });
 }
-async function executeAgent(runtime: OsnovaRuntime, runId: string, approveAll: boolean) {
-  let run = await runtime.agent.execute(runId);
-  while (run.status === "waiting-approval" && approveAll) {
-    const step = Object.entries(run.stepJobs).find(([, jobId]) => runtime.jobs.get(jobId).status === "waiting-approval");
-    if (!step) break;
-    run = await runtime.agent.approve(run.id, step[0], approval(step[1], true, "once"));
-  }
-  return run;
-}
 async function readStandardInput(): Promise<string> { let value = ""; for await (const chunk of process.stdin) value += String(chunk); return value; }
 function print(value: unknown): void { process.stdout.write(`${JSON.stringify(value, null, 2)}\n`); }
 function printHelp(): void {
-  process.stdout.write(`osnova-runtime 0.2\n\nCommands:\n  serve | doctor | status | selftest\n  project:create|open|validate|migrate\n  extension:install|update|list|rollback|connect|disconnect\n  runtime:start|stop\n  session:create|list|events\n  operation:list|invoke | approval:decide\n  artifact:list|publish\n  context:preview|resolve|reindex\n  connector:list|sync\n  model:list|install|remove|provider-list|provider-configure\n  agent:plan|execute|approve|cancel\n  job:get|list|cancel\n\nUse --project PATH for project-scoped commands. Secrets are accepted only with --secret-stdin.\n`);
+  process.stdout.write(`osnova-runtime 0.2\n\nCommands:\n  serve | doctor | status | selftest\n  project:create|open|validate|migrate\n  extension:install|update|list|rollback|connect|disconnect\n  runtime:start|stop\n  session:create|list|events\n  operation:list|invoke | approval:decide\n  artifact:list|publish\n  context:preview|resolve|reindex\n  connector:list|sync\n  model:list|install|remove|provider-list|provider-configure\n  job:get|list|cancel\n\nUse --project PATH for project-scoped commands. Secrets are accepted only with --secret-stdin.\n`);
 }

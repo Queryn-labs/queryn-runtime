@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 import { createNote, createArtifactRelation, importAsset, listArtifacts, listAssets, listNotes, readNote, registerExistingArtifact } from "@osnova/project";
 import type { ApprovalDecision, OperationDefinition, RuntimeDescriptor } from "@osnova/types";
 import { AgentKernel } from "./agent-kernel.js";
@@ -8,7 +8,7 @@ import { AgentOrchestrator } from "./agent-orchestrator.js";
 import { ArtifactIngestor } from "./artifact-ingestor.js";
 import { ConnectorEngine } from "./connector-engine.js";
 import { ContextBroker, ProjectIndexer, readTextPrefixForMaterial } from "./context-broker.js";
-import { resolveSafeExistingFile } from "./atomic.js";
+import { resolveSafeExistingFile, writeJsonAtomic } from "./atomic.js";
 import { createSystemCredentialStore } from "./credential-store.js";
 import { DiagnosticsService } from "./diagnostics.js";
 import { ExtensionManager } from "./extension-manager.js";
@@ -22,7 +22,8 @@ import { PolicyEngine } from "./policy-engine.js";
 import { ProjectService } from "./project-service.js";
 import { createInvocationDirectories, removeInvocationDirectories, runtimeInvocationScopeRoot, RuntimeSupervisor } from "./runtime-supervisor.js";
 import { stageModels } from "./operation-service.js";
-import { writeJsonAtomic } from "./atomic.js";
+import { readSessionTranscript, searchSessions } from "./session-memory.js";
+import { fetchPageText } from "./web-fetch.js";
 
 export interface ModelProviderConfig {
   id: string;
@@ -58,7 +59,7 @@ export class OsnovaRuntime {
     this.credentials = createSystemCredentialStore(dataRoot);
     this.operations = new OperationService(dataRoot, this.projects, this.registry, this.policy, this.jobs, this.supervisor, this.ingestor, this.models);
     this.agentKernel = new AgentKernel(dataRoot, this.registry, this.operations, this.jobs, this.context, this.indexer);
-    this.agent = new AgentOrchestrator(dataRoot, this.registry, this.context, this.operations, this.jobs, this.agentKernel);
+    this.agent = new AgentOrchestrator(this.registry, this.operations, this.agentKernel);
     this.extensions = new ExtensionManager(dataRoot, this.registry, this.policy, this.context, this.connectors, this.supervisor, this.models, this.agent, this.projects);
     this.diagnostics = new DiagnosticsService(dataRoot, this.extensions, this.models, this.jobs);
     registerBuiltins(this);
@@ -68,6 +69,10 @@ export class OsnovaRuntime {
     await this.jobs.initialize();
     await this.extensions.loadActive();
     for (const config of await this.listModelProviderConfigs()) this.#registerModelProvider(config);
+    for (const descriptor of await readMcpServers(this.dataRoot)) {
+      try { await this.registerMcpServer(descriptor); }
+      catch { /* An unreachable MCP server must not block runtime startup. */ }
+    }
   }
 
   async openProject(projectPath: string) {
@@ -116,17 +121,18 @@ export class OsnovaRuntime {
     await this.models.remove(sha256, await this.extensions.modelDependents(sha256));
   }
 
-  /** Connects a stdio MCP server and exposes its tools to agents and RPC. */
+  /** Connects a stdio MCP server, exposes its tools to agents and RPC and remembers it across restarts. */
   async registerMcpServer(descriptor: McpServerDescriptor): Promise<{ id: string; tools: string[] }> {
     const { tools } = await this.mcp.connect(descriptor);
     this.mcp.registerInto(this.registry, descriptor, tools);
+    await writeMcpServer(this.dataRoot, descriptor);
     return { id: descriptor.id, tools: tools.map((tool) => tool.name) };
   }
 
   async unregisterMcpServer(serverId: string): Promise<void> {
     await this.mcp.disconnect(serverId);
+    await removeMcpServer(this.dataRoot, serverId);
   }
-
   async shutdown(): Promise<void> {
     await this.supervisor.stop();
     await this.mcp.shutdown();
@@ -200,7 +206,7 @@ function registerBuiltins(runtime: OsnovaRuntime): void {
       return { structured: { path: relativePath, title: note.summary.title, content: body, truncated: note.body.length > maxChars, sensitivity: policy.sensitive ? "sensitive" : "project" } };
     } catch {
       const asset = (await listAssets(projectPath)).find((candidate) => candidate.relativePath === relativePath);
-      if (!asset) throw new Error(`Project material not found: ${relativePath}`);
+      if (!asset) throw new Error(`Project material not found: ${relativePath}. Paths are project-relative (no drive or project-name prefixes); find the exact path with osnova.project.search by title or osnova.project.list with a folder.`);
       const mediaType = asset.mediaType ?? "";
       const isText = mediaType.startsWith("text/") || /\.(?:md|txt|c|cc|cpp|css|csv|go|h|hpp|html|ini|java|js|jsx|kt|log|mjs|py|rb|rs|sh|sql|svg|toml|ts|tsx|xml|ya?ml)$/i.test(relativePath);
       if (!isText) return { structured: { path: relativePath, name: asset.name, content: `Binary file (${mediaType || "unknown"}, ${asset.size} bytes); text preview unavailable.`, truncated: false, sensitivity: policy.sensitive ? "sensitive" : "project" } };
@@ -211,19 +217,43 @@ function registerBuiltins(runtime: OsnovaRuntime): void {
 
   register(runtime, {
     id: "osnova.project.list", toolId: "osnova.project", version: "1.0.0", title: "List project materials",
-    description: "List notes, files and registered artifacts with titles and project-relative paths.",
-    inputSchema: { type: "object", additionalProperties: false, properties: {} },
-    outputSchema: { type: "object", required: ["items"], properties: { items: { type: "array" } } },
+    description: "List notes, files and registered artifacts with titles and project-relative paths. Large projects are paginated: pass a folder (path prefix, e.g. \"notes/02_domains\") to narrow the listing.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { folder: { type: "string" } } },
+    outputSchema: { type: "object", required: ["items"], properties: { items: { type: "array" }, truncated: { type: "boolean" } } },
     risk: "safe-read", agentVisibility: "automatic", execution: "immediate", cancellable: false, idempotent: true,
     permissions: ["project:read"]
-  }, async ({ projectPath }) => {
+  }, async ({ projectPath, arguments: args }) => {
+    const folder = typeof args.folder === "string" && args.folder.trim() ? `${args.folder.trim().replace(/\/+$/, "")}/` : "";
+    const matchesFolder = (relativePath: string): boolean => !folder || relativePath.startsWith(folder);
     const [notes, assets, artifacts] = await Promise.all([listNotes(projectPath), listAssets(projectPath), listArtifacts(projectPath)]);
+    const filteredNotes = notes.filter((note) => matchesFolder(note.relativePath));
+    const filteredAssets = assets.filter((asset) => matchesFolder(asset.relativePath));
+    const filteredArtifacts = artifacts.filter((artifact) => matchesFolder(artifact.id));
     const items = [
-      ...notes.slice(0, 200).map((note) => ({ kind: "note", title: note.title, path: note.relativePath })),
-      ...assets.slice(0, 150).map((asset) => ({ kind: "file", title: asset.name, path: asset.relativePath })),
-      ...artifacts.slice(0, 100).map((artifact) => ({ kind: "artifact", title: artifact.title ?? artifact.id, artifactId: artifact.id }))
+      ...filteredNotes.slice(0, 80).map((note) => ({ kind: "note", title: note.title, path: note.relativePath })),
+      ...filteredAssets.slice(0, 60).map((asset) => ({ kind: "file", title: asset.name, path: asset.relativePath })),
+      ...filteredArtifacts.slice(0, 40).map((artifact) => ({ kind: "artifact", title: artifact.title ?? artifact.id, artifactId: artifact.id }))
     ];
-    return { structured: { counts: { notes: notes.length, files: assets.length, artifacts: artifacts.length }, items } };
+    const total = filteredNotes.length + filteredAssets.length + filteredArtifacts.length;
+    return {
+      structured: {
+        counts: { notes: filteredNotes.length, files: filteredAssets.length, artifacts: filteredArtifacts.length },
+        truncated: items.length < total,
+        hint: items.length < total ? `Showing ${items.length} of ${total}. Pass a folder prefix like the shown paths' directories to see more.` : undefined,
+        items
+      }
+    };
+  });
+  register(runtime, {
+    id: "osnova.web.fetch", toolId: "osnova.web", version: "1.0.0", title: "Fetch web page",
+    description: "Fetch a public http(s) page by URL and return its readable text. Use it when the user gives a concrete link or asks for content of a known page.",
+    inputSchema: { type: "object", required: ["url"], additionalProperties: false, properties: { url: { type: "string" }, maxChars: { type: "integer", minimum: 500, maximum: 20_000 } } },
+    outputSchema: { type: "object", required: ["text"], properties: { url: { type: "string" }, title: { type: "string" }, text: { type: "string" }, truncated: { type: "boolean" } } },
+    risk: "network-egress", agentVisibility: "automatic", execution: "immediate", cancellable: false, idempotent: true,
+    permissions: ["network:use"]
+  }, async ({ arguments: args }) => {
+    const page = await fetchPageText(String(args.url), typeof args.maxChars === "number" ? args.maxChars : 8_000);
+    return { structured: page };
   });
 
   register(runtime, {
@@ -284,6 +314,29 @@ function registerBuiltins(runtime: OsnovaRuntime): void {
     const relation = await createArtifactRelation(projectPath, { from: { artifactId: String(args.from) }, to: { artifactId: String(args.to) }, type: String(args.type) });
     return { structured: { relationId: relation.id } };
   });
+  register(runtime, {
+    id: "osnova.session.search", toolId: "osnova.memory", version: "1.0.0", title: "Search past sessions",
+    description: "Search past dialogue transcripts of this project. Available only when full memory is enabled for the current session.",
+    inputSchema: { type: "object", required: ["query"], additionalProperties: false, properties: { query: { type: "string", minLength: 1 } } },
+    outputSchema: { type: "object", required: ["matches"], properties: { matches: { type: "array" } } },
+    risk: "safe-read", agentVisibility: "automatic", execution: "immediate", cancellable: false, idempotent: true,
+    permissions: ["project:read"]
+  }, async ({ projectPath, arguments: args }) => {
+    const matches = await searchSessions(projectPath, String(args.query));
+    return { structured: { matches } };
+  });
+
+  register(runtime, {
+    id: "osnova.session.read", toolId: "osnova.memory", version: "1.0.0", title: "Read past session transcript",
+    description: "Read the user/assistant transcript of one past session. Available only when full memory is enabled for the current session.",
+    inputSchema: { type: "object", required: ["sessionId"], additionalProperties: false, properties: { sessionId: { type: "string", minLength: 1 } } },
+    outputSchema: { type: "object", required: ["title", "text"], properties: { title: { type: "string" }, text: { type: "string" }, truncated: { type: "boolean" } } },
+    risk: "safe-read", agentVisibility: "automatic", execution: "immediate", cancellable: false, idempotent: true,
+    permissions: ["project:read"]
+  }, async ({ projectPath, arguments: args }) => {
+    const result = await readSessionTranscript(projectPath, String(args.sessionId));
+    return { structured: result };
+  });
 
   register(runtime, {
     id: "osnova.context.reindex", toolId: "osnova.knowledge", version: "1.0.0", title: "Rebuild project index",
@@ -301,4 +354,35 @@ function registerBuiltins(runtime: OsnovaRuntime): void {
 function register(runtime: OsnovaRuntime, definition: OperationDefinition, handler: Parameters<OperationRegistry["register"]>[1]): void {
   const runtimeDescriptor: RuntimeDescriptor = { id: "osnova.builtin", kind: "builtin", lifecycle: "shared" };
   runtime.registry.register({ definition, extensionId: "osnova.builtin", runtime: runtimeDescriptor }, handler);
+}
+
+const MCP_SERVERS_FILE = "mcp-servers.json";
+
+async function readMcpServers(dataRoot: string): Promise<McpServerDescriptor[]> {
+  try {
+    const parsed = JSON.parse(await readFile(path.join(dataRoot, MCP_SERVERS_FILE), "utf8")) as { servers?: McpServerDescriptor[] };
+    return Array.isArray(parsed.servers) ? parsed.servers.filter((server) => typeof server?.id === "string" && typeof server?.command === "string") : [];
+  } catch { return []; }
+}
+
+async function writeMcpServer(dataRoot: string, descriptor: McpServerDescriptor): Promise<void> {
+  const servers = (await readMcpServers(dataRoot)).filter((server) => server.id !== descriptor.id);
+  servers.push(descriptor);
+  await persistMcpServers(dataRoot, servers);
+}
+
+async function removeMcpServer(dataRoot: string, serverId: string): Promise<void> {
+  await persistMcpServers(dataRoot, (await readMcpServers(dataRoot)).filter((server) => server.id !== serverId));
+}
+
+async function persistMcpServers(dataRoot: string, servers: McpServerDescriptor[]): Promise<void> {
+  const filePath = path.join(dataRoot, MCP_SERVERS_FILE);
+  if (!servers.length) {
+    await rm(filePath, { force: true });
+    return;
+  }
+  await mkdir(dataRoot, { recursive: true });
+  const temporaryPath = `${filePath}.${process.pid}.tmp`;
+  await writeFile(temporaryPath, JSON.stringify({ schemaVersion: "1", servers }, null, 2));
+  await rename(temporaryPath, filePath);
 }

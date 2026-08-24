@@ -77,6 +77,25 @@ test("portable context index keeps search available without node:sqlite", async 
   } finally { await rm(item.root, { recursive: true, force: true }); }
 });
 
+test("portable search tolerates inflections and partial term matches", async () => {
+  const item = await fixture();
+  try {
+    const project = item.runtime.projects.get(item.projectPath);
+    await createNote(project, { title: "Transformer Architecture", body: "Трансформеры обрабатывают последовательности через self-attention." });
+    await createNote(project, { title: "Заметки о планах", body: "Простые хозяйственные записи без отношения к теме." });
+    const indexer = new ProjectIndexer({ preferSqlite: false });
+    await indexer.rebuild(item.projectPath);
+
+    // Russian inflection of a word that appears only in another form in the document.
+    assert.equal((await indexer.search(item.projectPath, "трансформеров"))[0]?.title, "Transformer Architecture");
+    // Multi-term query where one term is missing from the best document entirely.
+    const mixed = await indexer.search(item.projectPath, "трансформеры attention");
+    assert.equal(mixed[0]?.title, "Transformer Architecture");
+    // Unrelated documents stay out of the results.
+    assert.equal((await indexer.search(item.projectPath, "трансформеров")).some((match) => match.title === "Заметки о планах"), false);
+  } finally { await rm(item.root, { recursive: true, force: true }); }
+});
+
 test("project context catalogs plain notes and resolves relevant content without artifact wrappers", async () => {
   const item = await fixture();
   try {
@@ -142,44 +161,6 @@ test("OpenAI-compatible replies stream as plain text while plans remain bounded 
   }
 });
 
-test("agent retries an incomplete source selection before reading project content", async () => {
-  const item = await fixture();
-  try {
-    let selectionCalls = 0;
-    item.runtime.agent.registerProvider({
-      id: "test.retry",
-      recipient: "local",
-      async complete(request) {
-        const properties = request.responseSchema?.properties as Record<string, unknown> | undefined;
-        if (properties?.queries) {
-          selectionCalls += 1;
-          return {
-            text: selectionCalls === 1
-              ? "{\"queries\":[\"transformer\""
-              : JSON.stringify({ queries: ["transformer"], projectRelativePaths: [], artifactIds: [] }),
-            model: request.model
-          };
-        }
-        if (!properties) {
-          request.onTextDelta?.("Recovered answer");
-          return { text: "Recovered answer", model: request.model };
-        }
-        return { text: JSON.stringify({ goal: "read", steps: [] }), model: request.model };
-      }
-    });
-    const run = await item.runtime.agent.plan({
-      projectPath: item.projectPath,
-      goal: "Read the project",
-      providerId: "test.retry",
-      model: "retry-1"
-    });
-    assert.equal(selectionCalls, 2);
-    assert.equal(run.response, "Recovered answer");
-    assert.equal(run.activities?.find((activity) => activity.stage === "selecting")?.status, "completed");
-  } finally {
-    await rm(item.root, { recursive: true, force: true });
-  }
-});
 
 test("operation schema validation resolves local refs and rejects unsafe patterns", () => {
   const schema = {
@@ -195,14 +176,6 @@ test("operation schema validation resolves local refs and rejects unsafe pattern
   assert.equal(validateJsonSchema({ type: "string", pattern: "(a+)+$" }, "aaaaaaaa!").issues.some((issue) => issue.includes("unsafe")), true);
 });
 
-test("agent rejects a malformed draft before creating a durable run", async () => {
-  const item = await fixture();
-  try {
-    await assert.rejects(() => item.runtime.agent.plan({
-      projectPath: item.projectPath, goal: "Malformed", draft: { goal: "Malformed", steps: "not-an-array" } as never
-    }), /invalid agent plan/);
-  } finally { await item.runtime.shutdown(); await rm(item.root, { recursive: true, force: true }); }
-});
 
 test("MCP context adapter maps resources/read into a bounded context envelope", async () => {
   const item = await fixture();
@@ -461,24 +434,6 @@ test("unsigned extension requires developer mode and connects with scoped grants
     const processId = (job.result?.structured as { pid?: number } | undefined)?.pid;
     assert.equal(customContext.text, `custom context:${processId}`);
     assert.equal(customContext.tokenEstimate < 20, true);
-    const generatedPlan = await item.runtime.agent.plan({ projectPath: item.projectPath, goal: "Local provider plan", providerId: "example.echo.model", model: "echo-1" });
-    assert.equal(generatedPlan.plan.steps.length, 0);
-    assert.equal(generatedPlan.response, "Generated answer");
-    const pipeline = await item.runtime.agent.plan({
-      projectPath: item.projectPath, goal: "Chain tool artifacts",
-      draft: { goal: "Chain tool artifacts", steps: [
-        { id: "first", operationId: "example.echo.run", title: "First", arguments: { text: "first" }, approvalRequired: false },
-        { id: "second", operationId: "example.echo.run", title: "Second", arguments: { text: "second" }, inputFromSteps: ["first"], approvalRequired: false }
-      ] }
-    });
-    const pipelineResult = await item.runtime.agent.execute(pipeline);
-    assert.equal(pipelineResult.status, "succeeded", pipelineResult.error);
-    const chainedArtifactId = item.runtime.jobs.get(pipelineResult.stepJobs.second).artifactIds?.[0];
-    assert.ok(chainedArtifactId);
-    const chainedArtifact = await (await import("@osnova/project")).readArtifact(item.projectPath, chainedArtifactId);
-    assert.equal(chainedArtifact.provenance.inputs?.length, 1);
-    assert.equal(chainedArtifact.provenance.inputs?.[0].payloads?.[0].sha256.length, 64);
-    assert.equal(item.runtime.supervisor.status("example.echo.runtime")[0]?.status, "running");
 
     const dangerous = await item.runtime.operations.invoke({ projectPath: item.projectPath, operationId: "example.echo.danger", arguments: { text: "approved after restart" }, publishArtifacts: true });
     assert.equal(dangerous.status, "waiting-approval");
@@ -545,82 +500,7 @@ test("project locks route different installed versions of the same extension", a
   } finally { await item.runtime.shutdown(); await rm(item.root, { recursive: true, force: true }); }
 });
 
-test("cloud model context requires and records explicit recipient approval", async () => {
-  const item = await fixture();
-  try {
-    let calls = 0;
-    item.runtime.agent.registerProvider({
-      id: "example.cloud", recipient: "cloud",
-      async complete(request) {
-        calls += 1;
-        const properties = request.responseSchema?.properties as Record<string, unknown> | undefined;
-        const text = !properties
-          ? "Cloud answer"
-          : JSON.stringify(properties.queries
-            ? { queries: [], projectRelativePaths: [], artifactIds: [] }
-            : { goal: "cloud", steps: [] });
-        if (!properties) request.onTextDelta?.(text);
-        return { text, model: request.model };
-      }
-    });
-    const outputDeltas: string[] = [];
-    item.runtime.agent.on("output.delta", (event: { delta: string }) => outputDeltas.push(event.delta));
-    const session = await createSession(item.runtime.projects.get(item.projectPath), { title: "Cloud planning" });
-    await assert.rejects(() => item.runtime.agent.plan({ projectPath: item.projectPath, sessionId: session.id, goal: "Plan", providerId: "example.cloud", model: "cloud-1" }), /explicit data-recipient approval/);
-    assert.equal(calls, 0);
-    const cloudRun = await item.runtime.agent.plan({
-      projectPath: item.projectPath, sessionId: session.id, goal: "Plan", providerId: "example.cloud", model: "cloud-1",
-      recipientApproval: { recipient: "cloud", approved: true, decidedAt: new Date().toISOString() }
-    });
-    assert.equal(calls, 3);
-    assert.equal(cloudRun.providerId, "example.cloud");
-    assert.equal(cloudRun.model, "cloud-1");
-    assert.equal(outputDeltas.join(""), "Cloud answer");
-    assert.deepEqual(cloudRun.activities?.map((activity) => [activity.stage, activity.status]), [
-      ["catalog", "completed"],
-      ["selecting", "completed"],
-      ["research", "completed"],
-      ["answer", "completed"],
-      ["planning", "completed"]
-    ]);
-    assert.equal(cloudRun.activities?.every((activity) => typeof activity.durationMs === "number"), true);
-    const events = await (await import("@osnova/project")).readSessionEvents(item.projectPath, session.id);
-    assert.deepEqual(events.map((event) => event.type), ["approval", "status", "assistant-message", "plan"]);
-    const sensitiveNote = await createNote(item.runtime.projects.get(item.projectPath), { title: "Local only", body: "Sensitive" });
-    await registerExistingArtifact(item.runtime.projects.get(item.projectPath), {
-      type: "example.sensitive", projectRelativePath: sensitiveNote.relativePath,
-      context: { mode: "none" }, metadata: { sensitivity: "sensitive" }
-    });
-    await assert.rejects(() => item.runtime.agent.plan({
-      projectPath: item.projectPath, sessionId: session.id, goal: "Do not send", providerId: "example.cloud", model: "cloud-1",
-      recipientApproval: { recipient: "cloud", approved: true, decidedAt: new Date().toISOString() }
-    }), /Compact context cannot be sent to cloud/);
-    assert.equal(calls, 3);
-  } finally { await rm(item.root, { recursive: true, force: true }); }
-});
 
-test("headless CLI resumes a portable agent plan across invocations", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "osnova-cli-test-"));
-  const runtimeHome = path.join(root, "runtime");
-  const projectPath = path.join(root, "project");
-  const cliPath = path.resolve(import.meta.dirname, "../dist/cli.js");
-  const runCli = async (...args: string[]) => JSON.parse((await execFileAsync(process.execPath, [cliPath, ...args, "--runtime-home", runtimeHome])).stdout) as Record<string, unknown>;
-  try {
-    await runCli("project:create", "--path", projectPath, "--id", "cli", "--name", "CLI project");
-    const session = await runCli("session:create", "--project", projectPath, "--title", "CLI session");
-    const draft = {
-      goal: "Create from CLI",
-      steps: [{ id: "write", operationId: "osnova.notes.create", title: "Write", arguments: { title: "CLI result", body: "Portable headless context" }, approvalRequired: false }]
-    };
-    const run = await runCli("agent:plan", "--project", projectPath, "--session", String(session.id), "--goal", "Create from CLI", "--draft", JSON.stringify(draft));
-    const completed = await runCli("agent:execute", "--run", String(run.id));
-    assert.equal(completed.status, "succeeded");
-    const artifacts = await runCli("artifact:list", "--project", projectPath) as unknown as Array<{ id: string }>;
-    assert.equal(artifacts.length, 1);
-    const context = await runCli("context:resolve", "--project", projectPath, "--artifacts", artifacts[0].id, "--expanded");
-    assert.match(String(context.text), /Portable headless context/);
-  } finally { await rm(root, { recursive: true, force: true }); }
-});
 
 test("a copied project opens without derived state, AI, OCI, or required extensions", async () => {
   const item = await fixture();
@@ -655,7 +535,7 @@ test("a copied project opens without derived state, AI, OCI, or required extensi
   }
 });
 
-test("local RPC rejects a wrong token and executes an agent draft", async (context) => {
+test("local RPC rejects a wrong token and executes an operation", async (context) => {
   const item = await fixture();
   let server;
   try { server = await startRpcServer(item.runtime); }
@@ -681,18 +561,17 @@ test("local RPC rejects a wrong token and executes an agent draft", async (conte
     const notifications: string[] = [];
     client.on("job.changed", () => notifications.push("job.changed"));
     client.on("artifact.published", () => notifications.push("artifact.published"));
-    const run = await client.request<{ id: string }>("agent.plan", {
-      projectPath: item.projectPath, sessionId: session.id, goal: "Create a summary note",
-      draft: { goal: "Create a summary note", steps: [{ id: "write", operationId: "osnova.notes.create", title: "Write", arguments: { title: "Summary", body: "Verified" }, approvalRequired: false }] }
+    const job = await client.request<{ id: string; status: string }>("operation.invoke", {
+      projectPath: item.projectPath, sessionId: session.id, operationId: "osnova.notes.create",
+      arguments: { title: "Summary", body: "Verified" }, publishArtifacts: true
     });
-    const completed = await client.request<{ status: string }>("agent.execute", { runId: run.id });
-    assert.equal(completed.status, "succeeded");
+    await waitForRuntimeJob(item.runtime, job.id, (status) => ["succeeded", "failed"].includes(status));
     const created = await client.request<Array<{ provenance: { runId?: string } }>>("artifact.list", { projectPath: item.projectPath });
-    assert.equal(created[0]?.provenance.runId, run.id);
+    assert.equal(created[0]?.provenance.runId, job.id);
     assert.equal(notifications.includes("job.changed"), true);
     assert.equal(notifications.includes("artifact.published"), true);
     client.close();
-  } finally { await server.close(); await rm(item.root, { recursive: true, force: true }); }
+  } finally { await server.close(); await item.runtime.shutdown(); await rm(item.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
 });
 
 function waitForRuntimeJob(runtime: OsnovaRuntime, jobId: string, predicate: (status: string, job: ReturnType<OsnovaRuntime["jobs"]["get"]>) => boolean) {

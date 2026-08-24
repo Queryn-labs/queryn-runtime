@@ -1,6 +1,7 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
-import { createProject, getProjectOverview, inspectProjectMigration, migrateProject, openProject } from "@osnova/project";
+import { adoptProject, createProject, getProjectOverview, inspectProjectAdoption, inspectProjectMigration, migrateProject, openProject } from "@osnova/project";
+import type { AdoptProjectInput } from "@osnova/project";
 import type { OsnovaProject } from "@osnova/types";
 
 export class ProjectService {
@@ -37,6 +38,16 @@ export class ProjectService {
 
   async migrate(rootPath: string, options: { dryRun?: boolean } = {}) {
     const result = await migrateProject(path.resolve(rootPath), options);
+    if (!result.dryRun) await this.open(rootPath);
+    return result;
+  }
+
+  async inspectAdoption(rootPath: string) {
+    return inspectProjectAdoption(path.resolve(rootPath));
+  }
+
+  async adopt(rootPath: string, input: AdoptProjectInput = {}, options: { dryRun?: boolean } = {}) {
+    const result = await adoptProject(path.resolve(rootPath), input, options);
     if (!result.dryRun) await this.open(rootPath);
     return result;
   }

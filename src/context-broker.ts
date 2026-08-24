@@ -436,17 +436,40 @@ function contextRestriction(artifact: ArtifactDescriptor): number {
 function searchPortableIndex(documents: IndexDocument[], query: string, limit: number): Array<{ id: string; kind: string; title: string; snippet: string }> {
   const terms = query.toLocaleLowerCase().split(/\s+/u).filter(Boolean);
   if (!terms.length) return [];
-  return documents
-    .map((document) => {
-      const haystack = `${document.title}\n${document.body}`.toLocaleLowerCase();
-      const score = terms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0);
-      const first = Math.max(0, Math.min(...terms.map((term) => haystack.indexOf(term)).filter((position) => position >= 0)) - 50);
-      return { document, score, snippet: document.body.slice(first, first + 240) };
-    })
-    .filter((entry) => entry.score === terms.length)
+  const ranked: Array<{ document: IndexDocument; score: number; snippet: string }> = [];
+  for (const document of documents) {
+    const title = document.title.toLocaleLowerCase();
+    const haystack = `${document.title}\n${document.body}`.toLocaleLowerCase();
+    let score = 0;
+    let first = -1;
+    for (const term of terms) {
+      const position = matchTerm(haystack, term);
+      if (position < 0) continue;
+      const exact = haystack.includes(term);
+      score += (title.includes(term) ? 2 : exact ? 1 : 0.6) * (exact ? 1 : 0.7);
+      if (first === -1) first = position;
+    }
+    if (score <= 0) continue;
+    const snippetStart = Math.max(0, first - 50);
+    ranked.push({ document, score, snippet: document.body.slice(snippetStart, snippetStart + 240) });
+  }
+  return ranked
     .sort((left, right) => right.score - left.score || left.document.title.localeCompare(right.document.title))
     .slice(0, Math.max(0, limit))
     .map(({ document, snippet }) => ({ id: document.id, kind: document.kind, title: document.title, snippet }));
+}
+
+/** Exact substring first, then a stem match tolerant to Russian-style inflections. */
+function matchTerm(haystack: string, term: string): number {
+  const exact = haystack.indexOf(term);
+  if (exact >= 0) return exact;
+  for (let trim = 1; trim <= 3; trim += 1) {
+    if (term.length - trim < 4) break;
+    const stem = term.slice(0, term.length - trim);
+    const position = haystack.indexOf(stem);
+    if (position >= 0) return position;
+  }
+  return -1;
 }
 
 function envelope(level: ContextLevel, limited: { text: string; truncated: boolean }, sources: ContextEnvelope["sources"], sensitivity: ContextEnvelope["sensitivity"], allowedRecipients: ContextEnvelope["allowedRecipients"], providerVersion: string): ContextEnvelope {
