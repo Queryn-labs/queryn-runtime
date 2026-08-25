@@ -8,7 +8,7 @@ import { writeJsonAtomic } from "./atomic.js";
 import type { ContextBroker } from "./context-broker.js";
 import { buildConversationHistory, trimHistoryToBudget } from "./history-builder.js";
 import type { JobManager } from "./job-manager.js";
-import type { ModelChatMessage, ModelProvider, ModelToolCall, ToolSchema } from "./model-provider.js";
+import type { ModelChatMessage, ModelProvider, ModelResponse, ModelToolCall, ToolSchema } from "./model-provider.js";
 import type { OperationRegistry } from "./operation-registry.js";
 import type { OperationService } from "./operation-service.js";
 import { validateJsonSchema } from "./schema.js";
@@ -20,6 +20,27 @@ const DEFAULT_MAX_DURATION_SECONDS = 1_800;
 const DEFAULT_HISTORY_BUDGET_TOKENS = 24_000;
 const OBSERVATION_MAX_CHARS = 4_000;
 export const PROGRESS_TOOL = "osnova.progress";
+
+export type TokenCountSource = "provider" | "estimated" | "mixed";
+
+export interface ModelGenerationMetrics {
+  durationMs: number;
+  ttftMs?: number;
+  inputTokens?: number;
+  outputTokens: number;
+  tokensPerSecond?: number;
+  finishReason?: string;
+  tokenCountSource: Exclude<TokenCountSource, "mixed">;
+}
+
+export interface ChatRunMetrics {
+  totalDurationMs: number;
+  modelCalls: number;
+  inputTokens?: number;
+  outputTokens: number;
+  tokenCountSource: TokenCountSource;
+  finalResponse?: ModelGenerationMetrics;
+}
 
 export interface ChatRun {
   schemaVersion: "1";
@@ -40,6 +61,7 @@ export interface ChatRun {
   pendingCallId?: string;
   pendingOperationId?: string;
   response?: string;
+  metrics?: ChatRunMetrics;
   error?: string;
   createdAt: string;
   updatedAt: string;
@@ -199,7 +221,9 @@ export class AgentKernel extends EventEmitter {
         if (finalizing) messages.push({ role: "system", content: "You have reached the step limit. Do not call any tools. Write your final answer now." });
         const memoryMode = await this.#sessionMemoryMode(run);
         const tools = finalizing ? undefined : await this.#toolSchemas(run.projectPath, memoryMode);
-        let response;
+        let response: ModelResponse;
+        const modelCallStartedAt = performance.now();
+        let firstTextDeltaAt: number | undefined;
         try {
           response = await provider.complete({
             projectPath: run.projectPath,
@@ -209,18 +233,23 @@ export class AgentKernel extends EventEmitter {
             maxTokens: 32_768,
             temperature: 0,
             signal: cancellationSignal,
-            onTextDelta: (delta) => this.emit("output.delta", { requestId: run.requestId, projectPath: run.projectPath, sessionId: run.sessionId, delta })
+            onTextDelta: (delta) => {
+              if (firstTextDeltaAt === undefined) firstTextDeltaAt = performance.now();
+              this.emit("output.delta", { requestId: run.requestId, projectPath: run.projectPath, sessionId: run.sessionId, delta });
+            }
           });
         } catch (error) {
           if (cancellationSignal.aborted) throw new Error("Agent response was cancelled.");
           throw error;
         }
+        const generationMetrics = createGenerationMetrics(response, modelCallStartedAt, firstTextDeltaAt, performance.now());
+        recordGenerationMetrics(run, generationMetrics);
         run.steps += 1;
         if (response.toolCalls?.length && !finalizing) {
           if (run.sessionId && response.text?.trim()) {
             await appendSessionEvent(run.projectPath, run.sessionId, {
               type: "assistant-message",
-              data: { content: response.text, providerId: run.providerId, model: run.model, interim: true }
+              data: { content: response.text, providerId: run.providerId, model: run.model, runId: run.id, interim: true }
             });
           }
           let suspended = false;
@@ -239,10 +268,11 @@ export class AgentKernel extends EventEmitter {
         if (response.text?.trim()) {
           run.response = response.text;
           run.status = "succeeded";
+          finalizeRunMetrics(run, generationMetrics);
           if (run.sessionId) {
             await appendSessionEvent(run.projectPath, run.sessionId, {
               type: "assistant-message",
-              data: { content: response.text, providerId: run.providerId, model: run.model }
+              data: { content: response.text, providerId: run.providerId, model: run.model, runId: run.id, metrics: run.metrics }
             });
           }
           await this.#persist(run);
@@ -255,6 +285,7 @@ export class AgentKernel extends EventEmitter {
       const cancelled = cancellationSignal.aborted || /cancel|abort/i.test(messageText);
       run.status = cancelled ? "cancelled" : "failed";
       run.error = messageText;
+      if (run.metrics) run.metrics.totalDurationMs = elapsedRunTime(run);
       await this.#persist(run);
       return run;
     }
@@ -491,6 +522,78 @@ export class AgentKernel extends EventEmitter {
   }
 }
 
+function createGenerationMetrics(response: ModelResponse, startedAt: number, firstTextDeltaAt: number | undefined, completedAt: number): ModelGenerationMetrics {
+  const providerInputTokens = finiteTokenCount(response.usage?.inputTokens);
+  const providerOutputTokens = finiteTokenCount(response.usage?.outputTokens);
+  const outputTokens = providerOutputTokens ?? estimateOutputTokens(response.text);
+  const durationMs = roundMetric(Math.max(0, completedAt - startedAt));
+  const ttftMs = firstTextDeltaAt === undefined ? undefined : roundMetric(Math.max(0, firstTextDeltaAt - startedAt));
+  const generationDurationMs = firstTextDeltaAt === undefined ? undefined : Math.max(1, completedAt - firstTextDeltaAt);
+  const tokensPerSecond = generationDurationMs === undefined || outputTokens <= 0
+    ? undefined
+    : roundMetric(outputTokens / (generationDurationMs / 1_000));
+  return {
+    durationMs,
+    ...(ttftMs === undefined ? {} : { ttftMs }),
+    ...(providerInputTokens === undefined ? {} : { inputTokens: providerInputTokens }),
+    outputTokens,
+    ...(tokensPerSecond === undefined ? {} : { tokensPerSecond }),
+    ...(response.finishReason ? { finishReason: response.finishReason } : {}),
+    tokenCountSource: providerOutputTokens === undefined ? "estimated" : "provider"
+  };
+}
+
+function recordGenerationMetrics(run: ChatRun, generation: ModelGenerationMetrics): void {
+  const previous = run.metrics;
+  const previousCalls = previous?.modelCalls ?? 0;
+  const previousOutputTokens = previous?.outputTokens ?? 0;
+  const hasCompleteInputTokens = previousCalls === 0
+    ? generation.inputTokens !== undefined
+    : previous?.inputTokens !== undefined && generation.inputTokens !== undefined;
+  const tokenCountSource = previousCalls === 0 || previousOutputTokens === 0
+    ? generation.tokenCountSource
+    : generation.outputTokens === 0 || previous?.tokenCountSource === generation.tokenCountSource
+      ? previous?.tokenCountSource ?? generation.tokenCountSource
+      : "mixed";
+  run.metrics = {
+    totalDurationMs: elapsedRunTime(run),
+    modelCalls: previousCalls + 1,
+    ...(hasCompleteInputTokens ? { inputTokens: (previous?.inputTokens ?? 0) + (generation.inputTokens ?? 0) } : {}),
+    outputTokens: previousOutputTokens + generation.outputTokens,
+    tokenCountSource,
+    ...(previous?.finalResponse ? { finalResponse: previous.finalResponse } : {})
+  };
+}
+
+function finalizeRunMetrics(run: ChatRun, finalResponse: ModelGenerationMetrics): void {
+  const metrics = run.metrics ?? {
+    totalDurationMs: elapsedRunTime(run),
+    modelCalls: 1,
+    ...(finalResponse.inputTokens === undefined ? {} : { inputTokens: finalResponse.inputTokens }),
+    outputTokens: finalResponse.outputTokens,
+    tokenCountSource: finalResponse.tokenCountSource
+  };
+  run.metrics = { ...metrics, totalDurationMs: elapsedRunTime(run), finalResponse };
+}
+
+function elapsedRunTime(run: ChatRun): number {
+  const startedAt = Date.parse(run.createdAt);
+  return Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : 0;
+}
+
+function finiteTokenCount(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined;
+}
+
+function estimateOutputTokens(text: string): number {
+  const normalized = text.trim();
+  return normalized ? Math.max(1, Math.ceil(normalized.length / 4)) : 0;
+}
+
+function roundMetric(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
 function observationFromJob(job: JobDescriptor): { ok: boolean; content: string; artifactIds: string[] } {
   if (job.status === "cancelled" || job.status === "interrupted") {
     return { ok: false, content: `The user declined or cancelled this action (${job.status}). Continue without it or ask how to proceed.`, artifactIds: [] };
@@ -540,4 +643,3 @@ function activityTitleForObservation(operationId: string): string {
 function cap(text: string, maxChars: number): string {
   return text.length <= maxChars ? text : `${text.slice(0, Math.max(0, maxChars - 20))}\n…[truncated]`;
 }
-

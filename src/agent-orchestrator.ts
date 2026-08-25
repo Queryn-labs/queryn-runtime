@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { appendSessionEvent } from "@osnova/project";
 import type { ApprovalDecision } from "@osnova/types";
 import type { AgentKernel, ChatRun } from "./agent-kernel.js";
-import type { ModelProvider } from "./model-provider.js";
+import type { ModelProvider, ModelProviderModel } from "./model-provider.js";
 import type { OperationRegistry } from "./operation-registry.js";
 import type { OperationService } from "./operation-service.js";
 
@@ -42,6 +42,15 @@ export interface AgentActivity {
   durationMs?: number;
 }
 
+export interface ModelProviderModelCatalog {
+  providerId: string;
+  recipient: "local" | "cloud";
+  models: ModelProviderModel[];
+  fetchedAt: string;
+  status: "ready" | "empty" | "unsupported" | "error";
+  error?: string;
+}
+
 export class AgentOrchestrator extends EventEmitter {
   readonly #providers = new Map<string, ModelProvider>();
 
@@ -58,6 +67,28 @@ export class AgentOrchestrator extends EventEmitter {
   registerProvider(provider: ModelProvider): void { this.#providers.set(provider.id, provider); }
   listProviders(): Array<{ id: string; recipient: "local" | "cloud"; sourceExtensionId?: string; permissions: string[]; risk: string }> {
     return [...this.#providers.values()].map(({ id, recipient, sourceExtensionId, permissions = [], risk = "safe-read" }) => ({ id, recipient, sourceExtensionId, permissions, risk }));
+  }
+
+  async listProviderModels(): Promise<ModelProviderModelCatalog[]> {
+    const fetchedAt = new Date().toISOString();
+    return Promise.all([...this.#providers.values()].map(async (provider): Promise<ModelProviderModelCatalog> => {
+      if (!provider.listModels) {
+        return { providerId: provider.id, recipient: provider.recipient, models: [], fetchedAt, status: "unsupported" };
+      }
+      try {
+        const models = await provider.listModels();
+        return { providerId: provider.id, recipient: provider.recipient, models, fetchedAt, status: models.length ? "ready" : "empty" };
+      } catch (error) {
+        return {
+          providerId: provider.id,
+          recipient: provider.recipient,
+          models: [],
+          fetchedAt,
+          status: "error",
+          error: error instanceof Error ? error.message : String(error)
+        };
+      }
+    }));
   }
 
   /** Tool-loop engine: one conversational agent turn per user message. */

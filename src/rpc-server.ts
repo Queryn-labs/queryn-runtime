@@ -3,7 +3,7 @@ import { chmod, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { appendSessionEvent, createSession, listArtifacts, listSessions, readArtifact, readSessionEvents, registerExistingArtifact, updateSession } from "@osnova/project";
+import { appendSessionEvent, createSession, forkSession, listArtifacts, listSessions, readArtifact, readSessionEvents, registerExistingArtifact, updateSession } from "@osnova/project";
 import type { ApprovalDecision } from "@osnova/types";
 import type { OsnovaRuntime } from "./runtime.js";
 import { writeJsonAtomic } from "./atomic.js";
@@ -127,6 +127,11 @@ async function dispatch(runtime: OsnovaRuntime, method: string, params: Record<s
     case "artifact.read": return readArtifact(projectPath(), requiredString(params, "artifactId"));
     case "artifact.list": return listArtifacts(projectPath());
     case "session.create": return createSession(runtime.projects.get(projectPath()), { title: requiredString(params, "title"), goal: optionalString(params.goal), context: params.context as never });
+    case "session.fork": return forkSession(runtime.projects.get(projectPath()), {
+      sourceSessionId: requiredString(params, "sessionId"),
+      throughEventId: requiredString(params, "throughEventId"),
+      title: optionalString(params.title)
+    });
     case "session.append": return appendSessionEvent(projectPath(), requiredString(params, "sessionId"), { type: requiredString(params, "type") as never, data: record(params.data) });
     case "session.update": return updateSession(projectPath(), requiredString(params, "sessionId"), sessionUpdatePatch(params));
     case "session.list": return listSessions(projectPath());
@@ -151,6 +156,7 @@ async function dispatch(runtime: OsnovaRuntime, method: string, params: Record<s
     case "model.provider.configure": return runtime.configureModelProvider(params.config as never, optionalString(params.secret));
     case "model.provider.config-list": return runtime.listModelProviderConfigs();
     case "model.provider.list": return runtime.agent.listProviders();
+    case "model.provider.models-list": return runtime.agent.listProviderModels();
     case "credential.remove": await runtime.credentials.delete(requiredString(params, "account")); return { ok: true };
     case "model.remove": await runtime.removeModel(requiredString(params, "sha256")); return { ok: true };
     case "diagnostics.doctor": return runtime.diagnostics.doctor(optionalString(params.projectPath));

@@ -43,6 +43,13 @@ export interface ModelResponse {
   toolCalls?: ModelToolCall[];
   finishReason?: string;
 }
+
+export interface ModelProviderModel {
+  id: string;
+  ownedBy?: string;
+  created?: number;
+}
+
 export interface ModelProvider {
   id: string;
   recipient: "local" | "cloud";
@@ -50,6 +57,7 @@ export interface ModelProvider {
   permissions?: Permission[];
   risk?: OperationRisk;
   complete(request: ModelRequest): Promise<ModelResponse>;
+  listModels?(): Promise<ModelProviderModel[]>;
 }
 
 export class OpenAICompatibleProvider implements ModelProvider {
@@ -98,6 +106,33 @@ export class OpenAICompatibleProvider implements ModelProvider {
       toolCalls: toolCalls.length ? toolCalls : undefined,
       finishReason: choice?.finish_reason ?? undefined
     };
+  }
+
+  async listModels(): Promise<ModelProviderModel[]> {
+    const key = this.credentialAccount ? await this.credentials.get(this.credentialAccount) : undefined;
+    const response = await fetch(new URL("models", ensureSlash(this.endpoint)), {
+      method: "GET",
+      signal: AbortSignal.timeout(15_000),
+      headers: key ? { authorization: `Bearer ${key}` } : {}
+    });
+    if (!response.ok) throw new Error(`Model provider returned HTTP ${response.status} while listing models.`);
+    const body = await readBoundedJsonResponse(response) as {
+      data?: Array<{ id?: unknown; owned_by?: unknown; created?: unknown }>;
+    };
+    const models = Array.isArray(body.data) ? body.data : [];
+    const normalized = new Map<string, ModelProviderModel>();
+    for (const model of models) {
+      if (typeof model.id !== "string" || !model.id.trim()) continue;
+      const id = model.id.trim();
+      if (normalized.has(id)) continue;
+      normalized.set(id, {
+        id,
+        ...(typeof model.owned_by === "string" ? { ownedBy: model.owned_by } : {}),
+        ...(typeof model.created === "number" ? { created: model.created } : {})
+      });
+    }
+    return [...normalized.values()]
+      .sort((left, right) => left.id.localeCompare(right.id));
   }
 }
 

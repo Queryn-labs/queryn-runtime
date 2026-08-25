@@ -13,10 +13,11 @@ import { OsnovaRuntime } from "./runtime.js";
 interface ScriptedTurn {
   text?: string;
   toolCalls?: ModelToolCall[];
+  usage?: ModelResponse["usage"];
   inspect?: (request: ModelRequest) => void;
 }
 
-type TurnSpec = ScriptedTurn | ((request: ModelRequest) => { text?: string; toolCalls?: ModelToolCall[] });
+type TurnSpec = ScriptedTurn | ((request: ModelRequest) => { text?: string; toolCalls?: ModelToolCall[]; usage?: ModelResponse["usage"] });
 
 function scriptedProvider(id: string, recipient: "local" | "cloud", turns: TurnSpec[]) {
   let index = 0;
@@ -31,7 +32,7 @@ function scriptedProvider(id: string, recipient: "local" | "cloud", turns: TurnS
       const resolved = typeof turn === "function" ? turn(request) : turn;
       if (typeof (turn as ScriptedTurn).inspect === "function") (turn as ScriptedTurn).inspect!(request);
       if (resolved.text) request.onTextDelta?.(resolved.text);
-      return { text: resolved.text ?? "", model: request.model, toolCalls: resolved.toolCalls };
+      return { text: resolved.text ?? "", model: request.model, toolCalls: resolved.toolCalls, usage: resolved.usage };
     }
   };
 }
@@ -95,6 +96,40 @@ test("provider protocol parses tool calls in streaming and non-streaming modes",
   }
 });
 
+test("OpenAI-compatible provider lists and normalizes available models", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      assert.equal(String(input), "http://127.0.0.1:1234/v1/models");
+      assert.equal(init?.method, "GET");
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer secret");
+      return new Response(JSON.stringify({
+        data: [
+          { id: "zeta", owned_by: "local" },
+          { id: "alpha", created: 2 },
+          { id: "alpha", owned_by: "duplicate" },
+          { id: "" },
+          { owned_by: "invalid" }
+        ]
+      }), { headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    const provider = new OpenAICompatibleProvider("test.local", "http://127.0.0.1:1234/v1/", {
+      async set() {},
+      async get(account: string) {
+        assert.equal(account, "test-account");
+        return "secret";
+      },
+      async delete() {}
+    }, "test-account");
+    assert.deepEqual(await provider.listModels(), [
+      { id: "alpha", created: 2 },
+      { id: "zeta", ownedBy: "local" }
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("agent loop searches, reads and answers with observable activity", async () => {
   const item = await fixture();
   try {
@@ -110,16 +145,24 @@ test("agent loop searches, reads and answers with observable activity", async ()
     item.runtime.agent.on("output.delta", (event) => deltas.push((event as { delta: string }).delta));
 
     const provider = scriptedProvider("test.loop", "local", [
-      { toolCalls: [{ id: "c1", name: "osnova.project.search", argumentsJson: JSON.stringify({ query: "attention" }) }] },
-      { toolCalls: [{ id: "c2", name: "osnova.project.read", argumentsJson: JSON.stringify({ path: note.relativePath }) }] },
-      { text: "Self-attention uses queries, keys and values." }
+      { toolCalls: [{ id: "c1", name: "osnova.project.search", argumentsJson: JSON.stringify({ query: "attention" }) }], usage: { inputTokens: 40, outputTokens: 4 } },
+      { toolCalls: [{ id: "c2", name: "osnova.project.read", argumentsJson: JSON.stringify({ path: note.relativePath }) }], usage: { inputTokens: 50, outputTokens: 4 } },
+      { text: "Self-attention uses queries, keys and values.", usage: { inputTokens: 120, outputTokens: 8 } }
     ]);
     item.runtime.agent.registerProvider(provider);
 
     const run = await item.runtime.agent.chat({ projectPath: item.projectPath, sessionId, goal: "Explain self-attention.", providerId: "test.loop", model: "loop-1" });
     assert.equal(run.status, "succeeded");
     assert.match(run.response ?? "", /queries, keys and values/);
-    const types = (await eventsOf(item, sessionId)).map((event) => event.type);
+    assert.equal(run.metrics?.modelCalls, 3);
+    assert.equal(run.metrics?.inputTokens, 210);
+    assert.equal(run.metrics?.outputTokens, 16);
+    assert.equal(run.metrics?.finalResponse?.outputTokens, 8);
+    assert.equal(run.metrics?.finalResponse?.tokenCountSource, "provider");
+    assert.equal((run.metrics?.finalResponse?.ttftMs ?? -1) >= 0, true);
+    assert.equal((run.metrics?.finalResponse?.tokensPerSecond ?? 0) > 0, true);
+    const events = await eventsOf(item, sessionId);
+    const types = events.map((event) => event.type);
     // operation-call / operation-result are the generic audit trail written by
     // OperationService around every tool execution.
     assert.deepEqual(types, [
@@ -128,6 +171,9 @@ test("agent loop searches, reads and answers with observable activity", async ()
       "tool-call", "operation-call", "operation-result", "observation",
       "assistant-message"
     ]);
+    const finalMessage = events.at(-1);
+    assert.equal(finalMessage?.data.runId, run.id);
+    assert.deepEqual(finalMessage?.data.metrics, run.metrics);
     assert.match(deltas.join(""), /Self-attention uses/);
     const kinds = activities.map((activity) => (activity as { kind?: string }).kind);
     assert.equal(kinds.includes("tool"), true);
@@ -311,4 +357,17 @@ test("history builder pairs tool calls with observations and drops dangling call
   assert.deepEqual(roles, ["user", "assistant", "tool", "assistant"]);
   const assistantWithCall = built.messages.find((message): message is Extract<ModelChatMessage, { role: "assistant" }> => message.role === "assistant");
   assert.equal(assistantWithCall?.toolCalls?.[0]?.name, "osnova.project.search");
+});
+
+test("history builder excludes events hidden by a portable session tombstone", () => {
+  const base = { schemaVersion: "1" as const, sessionId: "s", sequence: 0, timestamp: new Date().toISOString() };
+  const events: SessionEvent[] = [
+    { ...base, id: "user", type: "user-message", data: { content: "Goal" } },
+    { ...base, id: "call", type: "tool-call", data: { callId: "pair", operationId: "osnova.project.search", arguments: { query: "q" } } },
+    { ...base, id: "observation", type: "observation", data: { callId: "pair", operationId: "osnova.project.search", content: "Result" } },
+    { ...base, id: "answer", type: "assistant-message", data: { content: "Hidden answer" } },
+    { ...base, id: "tombstone", type: "status", data: { kind: "events-hidden", eventIds: ["call", "observation", "answer"] } }
+  ];
+  const built = buildConversationHistory(events);
+  assert.deepEqual(built.messages, [{ role: "user", content: "Goal" }]);
 });

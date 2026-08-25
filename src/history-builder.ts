@@ -9,14 +9,18 @@ export interface BuiltHistory {
 }
 
 export function buildConversationHistory(events: SessionEvent[]): BuiltHistory {
+  const hiddenEventIds = new Set(events
+    .filter((event) => event.type === "status" && event.data.kind === "events-hidden" && Array.isArray(event.data.eventIds))
+    .flatMap((event) => (event.data.eventIds as unknown[]).filter((id): id is string => typeof id === "string")));
+  const visibleEvents = events.filter((event) => !hiddenEventIds.has(event.id));
   const observedCallIds = new Set(
-    events
+    visibleEvents
       .filter((event) => event.type === "observation")
       .map((event) => event.data.callId)
       .filter((callId): callId is string => typeof callId === "string")
   );
   const messages: ModelChatMessage[] = [];
-  for (const event of events) {
+  for (const event of visibleEvents) {
     const data = event.data;
     if (event.type === "user-message" && typeof data.content === "string") {
       messages.push({ role: "user", content: data.content });
