@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { appendSessionEvent } from "@osnova/project";
-import type { ApprovalDecision } from "@osnova/types";
+import { appendSessionEvent } from "@queryn/project";
+import type { ApprovalDecision } from "@queryn/types";
 import type { AgentKernel, ChatRun } from "./agent-kernel.js";
 import type { ModelProvider, ModelProviderModel } from "./model-provider.js";
 import type { OperationRegistry } from "./operation-registry.js";
@@ -92,7 +92,7 @@ export class AgentOrchestrator extends EventEmitter {
   }
 
   // Provider authorization completes before the kernel starts a model-driven run.
-  // see osnova-docs/docs/adr/adr-0012-unified-agent-loop.md
+  // see queryn-docs/docs/adr/adr-0012-unified-agent-loop.md
   /** Tool-loop engine: one conversational agent turn per user message. */
   async chat(input: CreateChatInput): Promise<ChatRun> {
     const provider = input.providerId ? this.#providers.get(input.providerId) : undefined;

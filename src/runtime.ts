@@ -1,8 +1,8 @@
 import os from "node:os";
 import path from "node:path";
 import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
-import { createNote, createArtifactRelation, importAsset, listArtifacts, listAssets, listNotes, readNote, registerExistingArtifact } from "@osnova/project";
-import type { ApprovalDecision, OperationDefinition, RuntimeDescriptor } from "@osnova/types";
+import { createNote, createArtifactRelation, importAsset, listArtifacts, listAssets, listNotes, readNote, registerExistingArtifact } from "@queryn/project";
+import type { ApprovalDecision, OperationDefinition, RuntimeDescriptor } from "@queryn/types";
 import { AgentKernel } from "./agent-kernel.js";
 import { AgentOrchestrator } from "./agent-orchestrator.js";
 import { ArtifactIngestor } from "./artifact-ingestor.js";
@@ -32,7 +32,7 @@ export interface ModelProviderConfig {
   credentialAccount?: string;
 }
 
-export class OsnovaRuntime {
+export class QuerynRuntime {
   readonly projects = new ProjectService();
   readonly registry = new OperationRegistry();
   readonly policy: PolicyEngine;
@@ -140,7 +140,7 @@ export class OsnovaRuntime {
 
   status() {
     return {
-      name: "osnova-runtime" as const, version: "0.2.0", status: "ready" as const,
+      name: "queryn-runtime" as const, version: "0.2.0", status: "ready" as const,
       capabilities: ["projects", "extensions", "operations", "jobs", "artifacts", "sessions", "context", "connectors", "models", "agent", "oci-optional"],
       openProjects: this.projects.list().map((project) => project.rootPath),
       runtimes: this.supervisor.status()
@@ -164,15 +164,15 @@ export class OsnovaRuntime {
 }
 
 export function defaultRuntimeDataRoot(): string {
-  if (process.env.OSNOVA_RUNTIME_HOME) return path.resolve(process.env.OSNOVA_RUNTIME_HOME);
-  if (process.platform === "darwin") return path.join(os.homedir(), "Library", "Application Support", "Osnova", "runtime");
-  if (process.platform === "win32") return path.join(process.env.LOCALAPPDATA ?? os.homedir(), "Osnova", "runtime");
-  return path.join(os.homedir(), ".local", "share", "osnova", "runtime");
+  if (process.env.QUERYN_RUNTIME_HOME) return path.resolve(process.env.QUERYN_RUNTIME_HOME);
+  if (process.platform === "darwin") return path.join(os.homedir(), "Library", "Application Support", "Queryn", "runtime");
+  if (process.platform === "win32") return path.join(process.env.LOCALAPPDATA ?? os.homedir(), "Queryn", "runtime");
+  return path.join(os.homedir(), ".local", "share", "queryn", "runtime");
 }
 
-function registerBuiltins(runtime: OsnovaRuntime): void {
+function registerBuiltins(runtime: QuerynRuntime): void {
   register(runtime, {
-    id: "osnova.project.search", toolId: "osnova.project", version: "1.0.0", title: "Search project materials",
+    id: "queryn.project.search", toolId: "queryn.project", version: "1.0.0", title: "Search project materials",
     description: "Full-text search across project notes and artifacts. Returns ranked matches with short snippets.",
     inputSchema: { type: "object", required: ["query"], additionalProperties: false, properties: { query: { type: "string", minLength: 1 }, limit: { type: "integer", minimum: 1, maximum: 20 } } },
     outputSchema: { type: "object", required: ["matches"], properties: { matches: { type: "array" }, engine: { type: "string" } } },
@@ -184,7 +184,7 @@ function registerBuiltins(runtime: OsnovaRuntime): void {
   });
 
   register(runtime, {
-    id: "osnova.project.read", toolId: "osnova.project", version: "1.0.0", title: "Read project material",
+    id: "queryn.project.read", toolId: "queryn.project", version: "1.0.0", title: "Read project material",
     description: "Read the content of one note or text file by its project-relative path. Respects the material's context policy and sensitivity.",
     inputSchema: { type: "object", required: ["path"], additionalProperties: false, properties: { path: { type: "string", minLength: 1 }, maxChars: { type: "integer", minimum: 500, maximum: 20_000 } } },
     outputSchema: { type: "object", required: ["content"], properties: { content: { type: "string" }, truncated: { type: "boolean" }, sensitivity: { type: "string" } } },
@@ -206,7 +206,7 @@ function registerBuiltins(runtime: OsnovaRuntime): void {
       return { structured: { path: relativePath, title: note.summary.title, content: body, truncated: note.body.length > maxChars, sensitivity: policy.sensitive ? "sensitive" : "project" } };
     } catch {
       const asset = (await listAssets(projectPath)).find((candidate) => candidate.relativePath === relativePath);
-      if (!asset) throw new Error(`Project material not found: ${relativePath}. Paths are project-relative (no drive or project-name prefixes); find the exact path with osnova.project.search by title or osnova.project.list with a folder.`);
+      if (!asset) throw new Error(`Project material not found: ${relativePath}. Paths are project-relative (no drive or project-name prefixes); find the exact path with queryn.project.search by title or queryn.project.list with a folder.`);
       const mediaType = asset.mediaType ?? "";
       const isText = mediaType.startsWith("text/") || /\.(?:md|txt|c|cc|cpp|css|csv|go|h|hpp|html|ini|java|js|jsx|kt|log|mjs|py|rb|rs|sh|sql|svg|toml|ts|tsx|xml|ya?ml)$/i.test(relativePath);
       if (!isText) return { structured: { path: relativePath, name: asset.name, content: `Binary file (${mediaType || "unknown"}, ${asset.size} bytes); text preview unavailable.`, truncated: false, sensitivity: policy.sensitive ? "sensitive" : "project" } };
@@ -216,7 +216,7 @@ function registerBuiltins(runtime: OsnovaRuntime): void {
   });
 
   register(runtime, {
-    id: "osnova.project.list", toolId: "osnova.project", version: "1.0.0", title: "List project materials",
+    id: "queryn.project.list", toolId: "queryn.project", version: "1.0.0", title: "List project materials",
     description: "List notes, files and registered artifacts with titles and project-relative paths. Large projects are paginated: pass a folder (path prefix, e.g. \"notes/02_domains\") to narrow the listing.",
     inputSchema: { type: "object", additionalProperties: false, properties: { folder: { type: "string" } } },
     outputSchema: { type: "object", required: ["items"], properties: { items: { type: "array" }, truncated: { type: "boolean" } } },
@@ -245,7 +245,7 @@ function registerBuiltins(runtime: OsnovaRuntime): void {
     };
   });
   register(runtime, {
-    id: "osnova.web.fetch", toolId: "osnova.web", version: "1.0.0", title: "Fetch web page",
+    id: "queryn.web.fetch", toolId: "queryn.web", version: "1.0.0", title: "Fetch web page",
     description: "Fetch a public http(s) page by URL and return its readable text. Use it when the user gives a concrete link or asks for content of a known page.",
     inputSchema: { type: "object", required: ["url"], additionalProperties: false, properties: { url: { type: "string" }, maxChars: { type: "integer", minimum: 500, maximum: 20_000 } } },
     outputSchema: { type: "object", required: ["text"], properties: { url: { type: "string" }, title: { type: "string" }, text: { type: "string" }, truncated: { type: "boolean" } } },
@@ -257,7 +257,7 @@ function registerBuiltins(runtime: OsnovaRuntime): void {
   });
 
   register(runtime, {
-    id: "osnova.artifact.resolve", toolId: "osnova.project", version: "1.0.0", title: "Resolve artifact context",
+    id: "queryn.artifact.resolve", toolId: "queryn.project", version: "1.0.0", title: "Resolve artifact context",
     description: "Resolve one registered artifact into readable context, honoring its context mode (automatic/declarative/custom providers).",
     inputSchema: { type: "object", required: ["artifactId"], additionalProperties: false, properties: { artifactId: { type: "string", minLength: 1 }, level: { type: "string", enum: ["compact", "expanded"] }, budgetTokens: { type: "integer", minimum: 256, maximum: 32_000 } } },
     outputSchema: { type: "object", required: ["text"], properties: { text: { type: "string" }, truncated: { type: "boolean" }, sensitivity: { type: "string" } } },
@@ -279,34 +279,34 @@ function registerBuiltins(runtime: OsnovaRuntime): void {
 
   register(runtime, {
 
-    id: "osnova.notes.create", toolId: "osnova.notes", version: "1.0.0", title: "Create note",
+    id: "queryn.notes.create", toolId: "queryn.notes", version: "1.0.0", title: "Create note",
     description: "Create a Markdown note inside the project and register it as an artifact.",
     inputSchema: { type: "object", required: ["title"], additionalProperties: false, properties: { title: { type: "string", minLength: 1 }, body: { type: "string" }, folder: { type: "string" }, tags: { type: "array", items: { type: "string" } } } },
     outputSchema: { type: "object", required: ["artifactId", "relativePath"], properties: { artifactId: { type: "string" }, relativePath: { type: "string" } } },
-    produces: ["osnova.note"], risk: "project-write", agentVisibility: "automatic", execution: "immediate", cancellable: false, idempotent: false,
+    produces: ["queryn.note"], risk: "project-write", agentVisibility: "automatic", execution: "immediate", cancellable: false, idempotent: false,
     permissions: ["project:read", "artifact:create"]
   }, async ({ projectPath, arguments: args, provenance }) => {
     const project = runtime.projects.get(projectPath);
     const note = await createNote(project, { title: String(args.title), body: typeof args.body === "string" ? args.body : undefined, folderRelativePath: typeof args.folder === "string" ? args.folder : undefined, tags: Array.isArray(args.tags) ? args.tags.filter((tag): tag is string => typeof tag === "string") : undefined });
-    const artifact = await registerExistingArtifact(project, { type: "osnova.note", title: note.title, projectRelativePath: note.relativePath, provenance: { source: "operation", toolId: "osnova.notes", operationId: "osnova.notes.create", runId: provenance.runId, model: provenance.model }, context: { mode: "automatic" } });
+    const artifact = await registerExistingArtifact(project, { type: "queryn.note", title: note.title, projectRelativePath: note.relativePath, provenance: { source: "operation", toolId: "queryn.notes", operationId: "queryn.notes.create", runId: provenance.runId, model: provenance.model }, context: { mode: "automatic" } });
     return { structured: { artifactId: artifact.id, relativePath: note.relativePath }, publishedArtifactIds: [artifact.id] };
   });
 
   register(runtime, {
-    id: "osnova.files.import", toolId: "osnova.files", version: "1.0.0", title: "Import file",
+    id: "queryn.files.import", toolId: "queryn.files", version: "1.0.0", title: "Import file",
     inputSchema: { type: "object", required: ["sourcePath"], additionalProperties: false, properties: { sourcePath: { type: "string" }, folder: { type: "string" } } },
     outputSchema: { type: "object", required: ["artifactId", "relativePath"], properties: { artifactId: { type: "string" }, relativePath: { type: "string" } } },
-    produces: ["osnova.file"], risk: "project-write", agentVisibility: "hidden", execution: "immediate", cancellable: false, idempotent: false,
+    produces: ["queryn.file"], risk: "project-write", agentVisibility: "hidden", execution: "immediate", cancellable: false, idempotent: false,
     permissions: ["project:read", "artifact:create"]
   }, async ({ projectPath, arguments: args, provenance }) => {
     const project = runtime.projects.get(projectPath);
     const asset = await importAsset(project, { sourcePath: String(args.sourcePath), targetFolderRelativePath: typeof args.folder === "string" ? args.folder : undefined });
-    const artifact = await registerExistingArtifact(project, { type: "osnova.file", title: asset.name, projectRelativePath: asset.relativePath, provenance: { source: "import", runId: provenance.runId, model: provenance.model }, context: { mode: "automatic" } });
+    const artifact = await registerExistingArtifact(project, { type: "queryn.file", title: asset.name, projectRelativePath: asset.relativePath, provenance: { source: "import", runId: provenance.runId, model: provenance.model }, context: { mode: "automatic" } });
     return { structured: { artifactId: artifact.id, relativePath: asset.relativePath }, publishedArtifactIds: [artifact.id] };
   });
 
   register(runtime, {
-    id: "osnova.graph.link", toolId: "osnova.graph", version: "1.0.0", title: "Link artifacts",
+    id: "queryn.graph.link", toolId: "queryn.graph", version: "1.0.0", title: "Link artifacts",
     inputSchema: { type: "object", required: ["from", "to", "type"], additionalProperties: false, properties: { from: { type: "string" }, to: { type: "string" }, type: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]+$" } } },
     outputSchema: { type: "object", required: ["relationId"], properties: { relationId: { type: "string" } } },
     risk: "project-write", agentVisibility: "automatic", execution: "immediate", cancellable: false, idempotent: false, permissions: ["project:read", "artifact:create"]
@@ -315,7 +315,7 @@ function registerBuiltins(runtime: OsnovaRuntime): void {
     return { structured: { relationId: relation.id } };
   });
   register(runtime, {
-    id: "osnova.session.search", toolId: "osnova.memory", version: "1.0.0", title: "Search past sessions",
+    id: "queryn.session.search", toolId: "queryn.memory", version: "1.0.0", title: "Search past sessions",
     description: "Search past dialogue transcripts of this project. Available only when full memory is enabled for the current session.",
     inputSchema: { type: "object", required: ["query"], additionalProperties: false, properties: { query: { type: "string", minLength: 1 } } },
     outputSchema: { type: "object", required: ["matches"], properties: { matches: { type: "array" } } },
@@ -327,7 +327,7 @@ function registerBuiltins(runtime: OsnovaRuntime): void {
   });
 
   register(runtime, {
-    id: "osnova.session.read", toolId: "osnova.memory", version: "1.0.0", title: "Read past session transcript",
+    id: "queryn.session.read", toolId: "queryn.memory", version: "1.0.0", title: "Read past session transcript",
     description: "Read the user/assistant transcript of one past session. Available only when full memory is enabled for the current session.",
     inputSchema: { type: "object", required: ["sessionId"], additionalProperties: false, properties: { sessionId: { type: "string", minLength: 1 } } },
     outputSchema: { type: "object", required: ["title", "text"], properties: { title: { type: "string" }, text: { type: "string" }, truncated: { type: "boolean" } } },
@@ -339,7 +339,7 @@ function registerBuiltins(runtime: OsnovaRuntime): void {
   });
 
   register(runtime, {
-    id: "osnova.context.reindex", toolId: "osnova.knowledge", version: "1.0.0", title: "Rebuild project index",
+    id: "queryn.context.reindex", toolId: "queryn.knowledge", version: "1.0.0", title: "Rebuild project index",
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
     outputSchema: { type: "object", required: ["indexed", "engine"], properties: { indexed: { type: "integer" }, engine: { type: "string" } } },
     risk: "safe-read", agentVisibility: "explicit", execution: "job", timeoutSeconds: 120, cancellable: true, idempotent: true, permissions: ["project:read"]
@@ -351,9 +351,9 @@ function registerBuiltins(runtime: OsnovaRuntime): void {
   });
 }
 
-function register(runtime: OsnovaRuntime, definition: OperationDefinition, handler: Parameters<OperationRegistry["register"]>[1]): void {
-  const runtimeDescriptor: RuntimeDescriptor = { id: "osnova.builtin", kind: "builtin", lifecycle: "shared" };
-  runtime.registry.register({ definition, extensionId: "osnova.builtin", runtime: runtimeDescriptor }, handler);
+function register(runtime: QuerynRuntime, definition: OperationDefinition, handler: Parameters<OperationRegistry["register"]>[1]): void {
+  const runtimeDescriptor: RuntimeDescriptor = { id: "queryn.builtin", kind: "builtin", lifecycle: "shared" };
+  runtime.registry.register({ definition, extensionId: "queryn.builtin", runtime: runtimeDescriptor }, handler);
 }
 
 const MCP_SERVERS_FILE = "mcp-servers.json";

@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { chmod, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ApprovalDecision, ArtifactDescriptor, ArtifactRef, JobDescriptor, Permission } from "@osnova/types";
-import { appendSessionEvent, readArtifact } from "@osnova/project";
+import type { ApprovalDecision, ArtifactDescriptor, ArtifactRef, JobDescriptor, Permission } from "@queryn/types";
+import { appendSessionEvent, readArtifact } from "@queryn/project";
 import type { ArtifactIngestor } from "./artifact-ingestor.js";
 import type { JobManager } from "./job-manager.js";
 import type { OperationRegistry } from "./operation-registry.js";
@@ -165,7 +165,7 @@ export class OperationService {
         model: input.model,
         inputs: inputRefs.length ? inputRefs : undefined
       }, { producedTypes: registered.definition.produces ?? [], allowedMediaTypesByType: registered.artifactMediaTypes, maxPayloadBytes: 256 * 1024 * 1024 }) : [];
-      const builtinArtifacts = registered.extensionId === "osnova.builtin"
+      const builtinArtifacts = registered.extensionId === "queryn.builtin"
         ? await Promise.all((result.publishedArtifactIds ?? []).map((artifactId) => readArtifact(project.rootPath, artifactId)))
         : [];
       if (builtinArtifacts.length) this.ingestor.notifyPublished(project, builtinArtifacts);
@@ -195,7 +195,7 @@ export class OperationService {
   }
 
   #evaluate(projectPath: string, extensionId: string, operation: ReturnType<OperationRegistry["get"]>["definition"], approval?: ApprovalDecision): PolicyEvaluation {
-    if (extensionId === "osnova.builtin" || extensionId.startsWith("osnova.mcp.")) {
+    if (extensionId === "queryn.builtin" || extensionId.startsWith("queryn.mcp.")) {
       const approvalRequired = ["network-egress", "external-side-effect", "privileged"].includes(operation.risk) && !approval?.approved;
       return { allowed: true, approvalRequired, missingPermissions: [] };
     }

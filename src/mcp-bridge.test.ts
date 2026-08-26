@@ -3,12 +3,12 @@ import { mkdtemp, rm, writeFile, chmod } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createSession } from "@osnova/project";
-import { OsnovaRuntime } from "./runtime.js";
+import { createSession } from "@queryn/project";
+import { QuerynRuntime } from "./runtime.js";
 
-async function fixture(): Promise<{ root: string; runtime: OsnovaRuntime; projectPath: string }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "osnova-mcp-test-"));
-  const runtime = new OsnovaRuntime(path.join(root, "runtime"));
+async function fixture(): Promise<{ root: string; runtime: QuerynRuntime; projectPath: string }> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "queryn-mcp-test-"));
+  const runtime = new QuerynRuntime(path.join(root, "runtime"));
   await runtime.initialize();
   const projectPath = path.join(root, "project");
   await runtime.projects.create({ rootPath: projectPath, id: "test", name: "Test" });
@@ -73,7 +73,7 @@ test("MCP stdio server tools participate in the agent loop", async () => {
     const echoOp = operations.find((operation) => operation.definition.id === "mcp.fake.echo");
     assert.ok(echoOp);
     assert.equal(echoOp.definition.risk, "safe-read");
-    assert.equal(echoOp.extensionId, "osnova.mcp.fake");
+    assert.equal(echoOp.extensionId, "queryn.mcp.fake");
 
     // Direct governed invocation through OperationService.
     const directJob = await item.runtime.operations.invokeAndWait({

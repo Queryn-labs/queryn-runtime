@@ -6,12 +6,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { packExtension } from "@osnova/plugin-sdk/package";
-import { createNote, createSession, registerExistingArtifact } from "@osnova/project";
+import { packExtension } from "@queryn/plugin-sdk/package";
+import { createNote, createSession, registerExistingArtifact } from "@queryn/project";
 import { JobManager } from "./job-manager.js";
 import { RpcClient } from "./rpc-client.js";
 import { startRpcServer } from "./rpc-server.js";
-import { OsnovaRuntime } from "./runtime.js";
+import { QuerynRuntime } from "./runtime.js";
 import { ProjectIndexer } from "./context-broker.js";
 import { OpenAICompatibleProvider, requestAgentPlan, requestAgentReply } from "./model-provider.js";
 import { stageArtifacts } from "./operation-service.js";
@@ -20,9 +20,9 @@ import { createInvocationDirectories, removeInvocationDirectories } from "./runt
 
 const execFileAsync = promisify(execFile);
 
-async function fixture(): Promise<{ root: string; runtime: OsnovaRuntime; projectPath: string }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "osnova-runtime-test-"));
-  const runtime = new OsnovaRuntime(path.join(root, "runtime"));
+async function fixture(): Promise<{ root: string; runtime: QuerynRuntime; projectPath: string }> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "queryn-runtime-test-"));
+  const runtime = new QuerynRuntime(path.join(root, "runtime"));
   await runtime.initialize();
   const projectPath = path.join(root, "project");
   await runtime.projects.create({ rootPath: projectPath, id: "test", name: "Test" });
@@ -33,14 +33,14 @@ test("builtin operation validates input and creates portable session history", a
   const item = await fixture();
   try {
     const session = await createSession(item.runtime.projects.get(item.projectPath), { title: "Writing" });
-    await assert.rejects(() => item.runtime.operations.invoke({ projectPath: item.projectPath, operationId: "osnova.notes.create", arguments: {} }), /title is required/);
-    const job = await item.runtime.operations.invokeAndWait({ projectPath: item.projectPath, sessionId: session.id, operationId: "osnova.notes.create", arguments: { title: "Result", body: "Study material" }, publishArtifacts: true });
+    await assert.rejects(() => item.runtime.operations.invoke({ projectPath: item.projectPath, operationId: "queryn.notes.create", arguments: {} }), /title is required/);
+    const job = await item.runtime.operations.invokeAndWait({ projectPath: item.projectPath, sessionId: session.id, operationId: "queryn.notes.create", arguments: { title: "Result", body: "Study material" }, publishArtifacts: true });
     assert.equal(job.status, "succeeded");
     const createdArtifactId = (job.result?.structured as { artifactId: string }).artifactId;
     assert.deepEqual(job.artifactIds, [createdArtifactId]);
-    assert.equal((await (await import("@osnova/project")).readArtifact(item.projectPath, createdArtifactId)).provenance.runId, job.id);
-    await assert.rejects(() => item.runtime.operations.invoke({ projectPath: item.projectPath, operationId: "osnova.notes.create", arguments: { title: "Nested" }, artifactIds: [createdArtifactId] }), /does not accept artifact inputs/);
-    const events = await (await import("@osnova/project")).readSessionEvents(item.projectPath, session.id);
+    assert.equal((await (await import("@queryn/project")).readArtifact(item.projectPath, createdArtifactId)).provenance.runId, job.id);
+    await assert.rejects(() => item.runtime.operations.invoke({ projectPath: item.projectPath, operationId: "queryn.notes.create", arguments: { title: "Nested" }, artifactIds: [createdArtifactId] }), /does not accept artifact inputs/);
+    const events = await (await import("@queryn/project")).readSessionEvents(item.projectPath, session.id);
     assert.deepEqual(events.map((event) => event.type), ["operation-call", "operation-result", "artifact-linked"]);
     const indexed = await item.runtime.indexer.rebuild(item.projectPath);
     assert.equal(indexed.indexed >= 1, true);
@@ -185,7 +185,7 @@ test("MCP context adapter maps resources/read into a bounded context envelope", 
       const request = JSON.parse(String(init?.body)) as { id: string; method: string; params: Record<string, unknown> };
       let result: unknown;
       if (request.method === "resources/read") {
-        assert.equal(request.params.uri, "osnova://resources/artifact-1");
+        assert.equal(request.params.uri, "queryn://resources/artifact-1");
         result = { contents: [
           { uri: request.params.uri, mimeType: "text/plain", text: "MCP knowledge" },
           { uri: `${request.params.uri}/image`, mimeType: "image/png", blob: "ignored" }
@@ -200,7 +200,7 @@ test("MCP context adapter maps resources/read into a bounded context envelope", 
     const envelope = await item.runtime.supervisor.call<{
       text: string; sources: Array<{ artifactId: string }>; providerVersion: string;
     }>({ id: "example.mcp", kind: "remote", lifecycle: "job", endpoint: "https://mcp.example.invalid/rpc", protocol: "mcp" }, "context/resolve", {
-      resourceUri: "osnova://resources/artifact-1", artifactId: "artifact-1", providerId: "example.context", level: "expanded"
+      resourceUri: "queryn://resources/artifact-1", artifactId: "artifact-1", providerId: "example.context", level: "expanded"
     }, { paths: { input: "", work: "", outbox: "", models: "" } });
     assert.match(envelope.text, /MCP knowledge/);
     assert.match(envelope.text, /Binary MCP resource: image\/png/);
@@ -238,13 +238,13 @@ test("MCP context adapter maps resources/read into a bounded context envelope", 
 test("OCI driver builds an isolated digest-pinned invocation", async (context) => {
   if (process.platform === "win32") { context.skip("Fake OCI executable fixture is POSIX-only."); return; }
   const item = await fixture();
-  const previousCommand = process.env.OSNOVA_OCI_COMMAND;
+  const previousCommand = process.env.QUERYN_OCI_COMMAND;
   try {
     const argsPath = path.join(item.root, "oci-args.json");
     const fakeOci = path.join(item.root, "fake-oci.cjs");
     await writeFile(fakeOci, `#!/usr/bin/env node\nconst fs=require("node:fs");const rl=require("node:readline").createInterface({input:process.stdin});fs.writeFileSync(${JSON.stringify(argsPath)},JSON.stringify(process.argv.slice(2)));rl.on("line",line=>{const q=JSON.parse(line);if(q.id===undefined)return;const result=q.method==="initialize"?{protocolVersion:"1"}:q.method==="shutdown"?{ok:true}:q.method==="jobs/start"?{structured:{isolated:true}}:{status:"ready"};process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:q.id,result})+"\\n");});\n`);
     await chmod(fakeOci, 0o700);
-    process.env.OSNOVA_OCI_COMMAND = fakeOci;
+    process.env.QUERYN_OCI_COMMAND = fakeOci;
     const invocationRoot = path.join(item.root, "oci-invocation");
     const inputPath = path.join(invocationRoot, "input");
     const workPath = path.join(invocationRoot, "work");
@@ -269,8 +269,8 @@ test("OCI driver builds an isolated digest-pinned invocation", async (context) =
     assert.equal(args.join(" ").includes("docker.sock"), false);
     assert.equal(args.at(-1), `example.invalid/tool@sha256:${"0".repeat(64)}`);
   } finally {
-    if (previousCommand === undefined) delete process.env.OSNOVA_OCI_COMMAND;
-    else process.env.OSNOVA_OCI_COMMAND = previousCommand;
+    if (previousCommand === undefined) delete process.env.QUERYN_OCI_COMMAND;
+    else process.env.QUERYN_OCI_COMMAND = previousCommand;
     await item.runtime.shutdown();
     await rm(item.root, { recursive: true, force: true });
   }
@@ -299,7 +299,7 @@ test("process tools cannot exceed their declared writable disk budget", async ()
 });
 
 test("interrupted jobs recover without mutating project", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "osnova-jobs-test-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "queryn-jobs-test-"));
   try {
     const first = new JobManager(root);
     await first.initialize();
@@ -324,7 +324,7 @@ test("model manager verifies content and provider config never enters the projec
     const model = await item.runtime.models.install({ id: "example.model", version: "1", source: payloadPath, sha256, size: payload.length, license: "MIT", platforms: [process.platform as "darwin" | "win32"] });
     assert.equal((await item.runtime.models.resolve(model.sha256)).id, "example.model");
     await item.runtime.configureModelProvider({ id: "example.local", type: "openai-compatible", endpoint: "http://127.0.0.1:1234/v1/" });
-    const projectManifest = await readFile(path.join(item.projectPath, "osnova.json"), "utf8");
+    const projectManifest = await readFile(path.join(item.projectPath, "queryn.json"), "utf8");
     assert.equal(projectManifest.includes("example.local"), false);
     const usagePath = path.join(item.root, "runtime", "model-usage", "project.json");
     await mkdir(path.dirname(usagePath), { recursive: true });
@@ -344,7 +344,7 @@ test("connector checkpoints after atomic artifact publication", async () => {
         if (checkpoint) return;
         yield { cursor: "cursor-1", candidate: { type: "example.feed.item", title: "Imported", payloads: [{ path: "item.md", mediaType: "text/markdown" }], context: { mode: "automatic" }, metadata: { inlineText: "Imported material" } } };
       }
-    }, { extensionId: "osnova.builtin", permissions: [], risk: "safe-read", scope: "project", produces: ["example.feed.item"] });
+    }, { extensionId: "queryn.builtin", permissions: [], risk: "safe-read", scope: "project", produces: ["example.feed.item"] });
     const first = await item.runtime.connectors.sync(item.runtime.projects.get(item.projectPath), "example.feed", { producedTypes: ["example.feed.item"] });
     const second = await item.runtime.connectors.sync(item.runtime.projects.get(item.projectPath), "example.feed", { producedTypes: ["example.feed.item"] });
     assert.equal(first.length, 1);
@@ -363,7 +363,7 @@ test("artifact batch rolls back earlier candidates when a later candidate is inv
       { id: "valid-first", type: "example.output", payloads: [{ path: "valid.md", mediaType: "text/markdown" }] },
       { id: "invalid-second", type: "example.output", payloads: [{ path: "fake.wav", mediaType: "audio/wav" }] }
     ], { source: "operation" }, { producedTypes: ["example.output"], allowedMediaTypes: ["text/markdown", "audio/wav"] }), /MIME mismatch/);
-    assert.equal((await (await import("@osnova/project")).listArtifacts(item.projectPath)).length, 0);
+    assert.equal((await (await import("@queryn/project")).listArtifacts(item.projectPath)).length, 0);
     await assert.rejects(() => readFile(path.join(item.projectPath, "artifacts", "data", "valid-first", "valid.md")));
   } finally { await rm(item.root, { recursive: true, force: true }); }
 });
@@ -386,12 +386,12 @@ test("artifact staging rejects a crafted descriptor that escapes the project", a
 
 test("unsigned extension requires developer mode and connects with scoped grants", async () => {
   const item = await fixture();
-  let resumed: OsnovaRuntime | undefined;
+  let resumed: QuerynRuntime | undefined;
   try {
     const source = path.join(item.root, "extension");
     await mkdir(source, { recursive: true });
     await writeFile(path.join(source, "extension.json"), JSON.stringify({
-      manifestVersion: "1", id: "example.echo", name: "Echo", version: "1.0.0", osnova: { minVersion: "0.2.0" },
+      manifestVersion: "1", id: "example.echo", name: "Echo", version: "1.0.0", queryn: { minVersion: "0.2.0" },
       permissions: ["artifact:read", "artifact:create", "background:run"],
       runtimes: [{ id: "example.echo.runtime", kind: "node-process", lifecycle: "project", idleTimeoutSeconds: 60, entry: "server.js" }],
       contributes: {
@@ -406,20 +406,20 @@ test("unsigned extension requires developer mode and connects with scoped grants
       }
     }, null, 2));
     await writeFile(path.join(source, "server.js"), `const fs=require("node:fs");const path=require("node:path");const rl=require("node:readline").createInterface({input:process.stdin});rl.on("line",line=>{const q=JSON.parse(line);if(q.id===undefined)return;let result;if(q.method==="initialize")result={protocolVersion:"1"};else if(q.method==="shutdown")result={ok:true};else if(q.method==="health")result={status:"ready",pid:process.pid};else if(q.method==="context/resolve")result={level:q.params.level,text:"custom context:"+process.pid,sources:[{artifactId:q.params.artifactId}],sensitivity:"project",allowedRecipients:["local","cloud"],tokenEstimate:999,truncated:false,providerVersion:"example.echo.context/1"};else if(q.method==="models/complete"){const properties=q.params.request.responseSchema?.properties;const text=!properties?"Generated answer":JSON.stringify(properties.queries?{queries:[],projectRelativePaths:[],artifactIds:[]}:{goal:"generated",steps:[]});result={text,model:q.params.request.model};}else if(q.method==="jobs/start"){fs.writeFileSync(path.join(q.params.paths.outbox,"report.md"),q.params.input.text);result={structured:{echoed:q.params.input.text,pid:process.pid},artifacts:[{type:"example.echo.report",payloads:[{path:"report.md",mediaType:"text/markdown"}],context:{mode:"custom",providerId:"example.echo.context"}}]};}else throw new Error("unknown");process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:q.id,result})+"\\n");});\n`);
-    const packagePath = path.join(item.root, "echo.osnova-package.json");
+    const packagePath = path.join(item.root, "echo.queryn-package.json");
     await packExtension(source, packagePath);
-    const tamperedPath = path.join(item.root, "echo-tampered.osnova-package.json");
+    const tamperedPath = path.join(item.root, "echo-tampered.queryn-package.json");
     const tampered = JSON.parse(await readFile(packagePath, "utf8")) as { manifest: { name: string } };
     tampered.manifest.name = "Tampered outer manifest";
     await writeFile(tamperedPath, JSON.stringify(tampered));
     await assert.rejects(() => item.runtime.extensions.install(tamperedPath, { allowUnsigned: true }), /does not match/);
     await assert.rejects(() => item.runtime.extensions.install(packagePath), /Unsigned extension/);
     await item.runtime.extensions.install(packagePath, { allowUnsigned: true });
-    const untrustedManifest = JSON.parse(await readFile(path.join(item.projectPath, "osnova.json"), "utf8")) as { extensions?: unknown[] };
+    const untrustedManifest = JSON.parse(await readFile(path.join(item.projectPath, "queryn.json"), "utf8")) as { extensions?: unknown[] };
     untrustedManifest.extensions = [{ id: "example.echo", version: "1.0.0", enabled: true }];
-    await writeFile(path.join(item.projectPath, "osnova.json"), JSON.stringify(untrustedManifest, null, 2));
-    await mkdir(path.join(item.projectPath, ".osnova", "extensions"), { recursive: true });
-    await writeFile(path.join(item.projectPath, ".osnova", "extensions", "grants.json"), JSON.stringify({ "example.echo": ["artifact:read", "artifact:create", "background:run"] }));
+    await writeFile(path.join(item.projectPath, "queryn.json"), JSON.stringify(untrustedManifest, null, 2));
+    await mkdir(path.join(item.projectPath, ".queryn", "extensions"), { recursive: true });
+    await writeFile(path.join(item.projectPath, ".queryn", "extensions", "grants.json"), JSON.stringify({ "example.echo": ["artifact:read", "artifact:create", "background:run"] }));
     await item.runtime.openProject(item.projectPath);
     await assert.rejects(() => item.runtime.operations.invoke({ projectPath: item.projectPath, operationId: "example.echo.run", arguments: { text: "untrusted grant" } }), /not granted/);
     await item.runtime.extensions.connect(item.projectPath, "example.echo", "1.0.0", ["artifact:read", "artifact:create", "background:run"]);
@@ -438,7 +438,7 @@ test("unsigned extension requires developer mode and connects with scoped grants
     const dangerous = await item.runtime.operations.invoke({ projectPath: item.projectPath, operationId: "example.echo.danger", arguments: { text: "approved after restart" }, publishArtifacts: true });
     assert.equal(dangerous.status, "waiting-approval");
     await item.runtime.shutdown();
-    resumed = new OsnovaRuntime(path.join(item.root, "runtime"));
+    resumed = new QuerynRuntime(path.join(item.root, "runtime"));
     await resumed.initialize();
     await resumed.openProject(item.projectPath);
     await resumed.operations.decide(dangerous.id, { planId: "manual", stepId: dangerous.id, approved: true, scope: "once", decidedAt: new Date().toISOString() });
@@ -447,7 +447,7 @@ test("unsigned extension requires developer mode and connects with scoped grants
     const pending = await resumed.operations.invoke({ projectPath: item.projectPath, operationId: "example.echo.run", arguments: { text: "publish after restart" }, publishArtifacts: false });
     await waitForRuntimeJob(resumed, pending.id, (_status, job) => job.statusMessage === "Waiting for artifact publication.");
     await resumed.shutdown();
-    const publisher = new OsnovaRuntime(path.join(item.root, "runtime"));
+    const publisher = new QuerynRuntime(path.join(item.root, "runtime"));
     resumed = publisher;
     await publisher.initialize();
     await publisher.openProject(item.projectPath);
@@ -461,7 +461,7 @@ test("project locks route different installed versions of the same extension", a
   const item = await fixture();
   try {
     const incompatiblePackage = await createVersionedExtensionPackage(item.root, "9.0.0", "future", "9.0.0");
-    await assert.rejects(() => item.runtime.extensions.install(incompatiblePackage, { allowUnsigned: true }), /requires Osnova 9.0.0/);
+    await assert.rejects(() => item.runtime.extensions.install(incompatiblePackage, { allowUnsigned: true }), /requires Queryn 9.0.0/);
     const firstPackage = await createVersionedExtensionPackage(item.root, "1.0.0", "one");
     const secondPackage = await createVersionedExtensionPackage(item.root, "2.0.0", "two");
     await item.runtime.extensions.install(firstPackage, { allowUnsigned: true });
@@ -479,8 +479,8 @@ test("project locks route different installed versions of the same extension", a
     assert.equal(item.runtime.registry.list({ extensionVersions: item.runtime.projects.extensionVersions(item.projectPath) }).find((operation) => operation.definition.id === "example.versioned.run")?.extensionVersion, "1.0.0");
     assert.equal(item.runtime.registry.list({ extensionVersions: item.runtime.projects.extensionVersions(secondProject) }).find((operation) => operation.definition.id === "example.versioned.run")?.extensionVersion, "2.0.0");
 
-    const firstLock = JSON.parse(await readFile(path.join(item.projectPath, ".osnova", "extensions", "lock.json"), "utf8")) as { extensions: Record<string, { version: string }> };
-    const secondLock = JSON.parse(await readFile(path.join(secondProject, ".osnova", "extensions", "lock.json"), "utf8")) as { extensions: Record<string, { version: string }> };
+    const firstLock = JSON.parse(await readFile(path.join(item.projectPath, ".queryn", "extensions", "lock.json"), "utf8")) as { extensions: Record<string, { version: string }> };
+    const secondLock = JSON.parse(await readFile(path.join(secondProject, ".queryn", "extensions", "lock.json"), "utf8")) as { extensions: Record<string, { version: string }> };
     assert.equal(firstLock.extensions["example.versioned"].version, "1.0.0");
     assert.equal(secondLock.extensions["example.versioned"].version, "2.0.0");
     const doctor = await item.runtime.diagnostics.doctor(secondProject);
@@ -489,7 +489,7 @@ test("project locks route different installed versions of the same extension", a
     assert.ok(firstInstall);
     await writeFile(path.join(firstInstall.path, "server.js"), "// modified after installation\n");
     await item.runtime.shutdown();
-    const recovered = new OsnovaRuntime(path.join(item.root, "runtime"));
+    const recovered = new QuerynRuntime(path.join(item.root, "runtime"));
     try {
       await recovered.initialize();
       await recovered.openProject(item.projectPath);
@@ -504,29 +504,29 @@ test("project locks route different installed versions of the same extension", a
 
 test("a copied project opens without derived state, AI, OCI, or required extensions", async () => {
   const item = await fixture();
-  let destinationRuntime: OsnovaRuntime | undefined;
+  let destinationRuntime: QuerynRuntime | undefined;
   try {
     const session = await createSession(item.runtime.projects.get(item.projectPath), { title: "Portable session" });
     await item.runtime.operations.invokeAndWait({
-      projectPath: item.projectPath, sessionId: session.id, operationId: "osnova.notes.create",
+      projectPath: item.projectPath, sessionId: session.id, operationId: "queryn.notes.create",
       arguments: { title: "Portable note", body: "Moves between computers" }, publishArtifacts: true
     });
-    const manifestPath = path.join(item.projectPath, "osnova.json");
+    const manifestPath = path.join(item.projectPath, "queryn.json");
     const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { extensions?: unknown[] };
     manifest.extensions = [{ id: "missing.example.tool", version: "^1.0.0", enabled: true }];
     await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 
     const copiedProject = path.join(item.root, "copied-project");
     await cp(item.projectPath, copiedProject, { recursive: true });
-    await rm(path.join(copiedProject, ".osnova"), { recursive: true, force: true });
-    destinationRuntime = new OsnovaRuntime(path.join(item.root, "destination-runtime"));
+    await rm(path.join(copiedProject, ".queryn"), { recursive: true, force: true });
+    destinationRuntime = new QuerynRuntime(path.join(item.root, "destination-runtime"));
     await destinationRuntime.initialize();
     await destinationRuntime.openProject(copiedProject);
-    assert.equal((await (await import("@osnova/project")).listSessions(copiedProject)).length, 1);
-    assert.equal((await (await import("@osnova/project")).listArtifacts(copiedProject)).length, 1);
+    assert.equal((await (await import("@queryn/project")).listSessions(copiedProject)).length, 1);
+    assert.equal((await (await import("@queryn/project")).listArtifacts(copiedProject)).length, 1);
     const doctor = await destinationRuntime.diagnostics.doctor(copiedProject);
     assert.equal(doctor.checks.find((check) => check.id === "project.extensions")?.status, "warning");
-    const builtIn = await destinationRuntime.operations.invokeAndWait({ projectPath: copiedProject, operationId: "osnova.notes.create", arguments: { title: "Still works" }, publishArtifacts: true });
+    const builtIn = await destinationRuntime.operations.invokeAndWait({ projectPath: copiedProject, operationId: "queryn.notes.create", arguments: { title: "Still works" }, publishArtifacts: true });
     assert.equal(builtIn.status, "succeeded");
   } finally {
     await destinationRuntime?.shutdown();
@@ -562,7 +562,7 @@ test("local RPC rejects a wrong token and executes an operation", async (context
     client.on("job.changed", () => notifications.push("job.changed"));
     client.on("artifact.published", () => notifications.push("artifact.published"));
     const job = await client.request<{ id: string; status: string }>("operation.invoke", {
-      projectPath: item.projectPath, sessionId: session.id, operationId: "osnova.notes.create",
+      projectPath: item.projectPath, sessionId: session.id, operationId: "queryn.notes.create",
       arguments: { title: "Summary", body: "Verified" }, publishArtifacts: true
     });
     await waitForRuntimeJob(item.runtime, job.id, (status) => ["succeeded", "failed"].includes(status));
@@ -574,11 +574,11 @@ test("local RPC rejects a wrong token and executes an operation", async (context
   } finally { await server.close(); await item.runtime.shutdown(); await rm(item.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
 });
 
-function waitForRuntimeJob(runtime: OsnovaRuntime, jobId: string, predicate: (status: string, job: ReturnType<OsnovaRuntime["jobs"]["get"]>) => boolean) {
+function waitForRuntimeJob(runtime: QuerynRuntime, jobId: string, predicate: (status: string, job: ReturnType<QuerynRuntime["jobs"]["get"]>) => boolean) {
   const current = runtime.jobs.get(jobId);
   if (predicate(current.status, current)) return Promise.resolve(current);
-  return new Promise<ReturnType<OsnovaRuntime["jobs"]["get"]>>((resolve) => {
-    const changed = (job: ReturnType<OsnovaRuntime["jobs"]["get"]>) => {
+  return new Promise<ReturnType<QuerynRuntime["jobs"]["get"]>>((resolve) => {
+    const changed = (job: ReturnType<QuerynRuntime["jobs"]["get"]>) => {
       if (job.id === jobId && predicate(job.status, job)) { runtime.jobs.off("changed", changed); resolve(job); }
     };
     runtime.jobs.on("changed", changed);
@@ -589,7 +589,7 @@ async function createVersionedExtensionPackage(root: string, version: string, ma
   const source = path.join(root, `versioned-${version}`);
   await mkdir(source, { recursive: true });
   await writeFile(path.join(source, "extension.json"), JSON.stringify({
-    manifestVersion: "1", id: "example.versioned", name: "Versioned", version, osnova: { minVersion }, permissions: [],
+    manifestVersion: "1", id: "example.versioned", name: "Versioned", version, queryn: { minVersion }, permissions: [],
     runtimes: [{ id: "example.versioned.runtime", kind: "node-process", lifecycle: "job", entry: "server.js" }],
     contributes: {
       tools: [{ id: "example.versioned.tool", title: "Versioned", runtimeId: "example.versioned.runtime" }],
@@ -602,7 +602,7 @@ async function createVersionedExtensionPackage(root: string, version: string, ma
     }
   }, null, 2));
   await writeFile(path.join(source, "server.js"), `const rl=require("node:readline").createInterface({input:process.stdin});rl.on("line",line=>{const q=JSON.parse(line);if(q.id===undefined)return;let result;if(q.method==="initialize")result={protocolVersion:"1"};else if(q.method==="shutdown")result={ok:true};else if(q.method==="health")result={status:"ready"};else if(q.method==="jobs/start")result={structured:{marker:${JSON.stringify(marker)}}};else throw new Error("unknown");process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:q.id,result})+"\\n");});\n`);
-  const packagePath = path.join(root, `versioned-${version}.osnova-package.json`);
+  const packagePath = path.join(root, `versioned-${version}.queryn-package.json`);
   await packExtension(source, packagePath);
   return packagePath;
 }

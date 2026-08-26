@@ -9,7 +9,7 @@ export interface FetchedPage {
 }
 
 // Network tools accept only HTTP(S) and bound response bytes before parsing.
-// see osnova-docs/docs/adr/adr-0013-agent-network-tools.md
+// see queryn-docs/docs/adr/adr-0013-agent-network-tools.md
 /** Fetches a public HTTP(S) page and reduces it to readable plain text. */
 export async function fetchPageText(rawUrl: string, maxChars = 8_000): Promise<FetchedPage> {
   let url: URL;
@@ -20,7 +20,7 @@ export async function fetchPageText(rawUrl: string, maxChars = 8_000): Promise<F
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Only http and https URLs are supported.");
 
-  const response = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), redirect: "follow", headers: { "user-agent": "Osnova/0.2 (+local knowledge tool)" } });
+  const response = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), redirect: "follow", headers: { "user-agent": "Queryn/0.2 (+local knowledge tool)" } });
   if (!response.ok) throw new Error(`Request failed with status ${response.status} for ${url}.`);
 
   const contentType = response.headers.get("content-type") ?? "";

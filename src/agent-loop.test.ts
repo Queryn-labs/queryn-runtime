@@ -3,12 +3,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createNote, createSession, readSessionEvents, registerExistingArtifact } from "@osnova/project";
-import type { SessionEvent } from "@osnova/types";
+import { createNote, createSession, readSessionEvents, registerExistingArtifact } from "@queryn/project";
+import type { SessionEvent } from "@queryn/types";
 import type { ChatRun } from "./agent-kernel.js";
 import { OpenAICompatibleProvider, type ModelChatMessage, type ModelRequest, type ModelResponse, type ModelToolCall } from "./model-provider.js";
 import { buildConversationHistory } from "./history-builder.js";
-import { OsnovaRuntime } from "./runtime.js";
+import { QuerynRuntime } from "./runtime.js";
 
 interface ScriptedTurn {
   text?: string;
@@ -37,9 +37,9 @@ function scriptedProvider(id: string, recipient: "local" | "cloud", turns: TurnS
   };
 }
 
-async function fixture(): Promise<{ root: string; runtime: OsnovaRuntime; projectPath: string }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "osnova-agent-loop-test-"));
-  const runtime = new OsnovaRuntime(path.join(root, "runtime"));
+async function fixture(): Promise<{ root: string; runtime: QuerynRuntime; projectPath: string }> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "queryn-agent-loop-test-"));
+  const runtime = new QuerynRuntime(path.join(root, "runtime"));
   await runtime.initialize();
   const projectPath = path.join(root, "project");
   await runtime.projects.create({ rootPath: projectPath, id: "test", name: "Test" });
@@ -48,7 +48,7 @@ async function fixture(): Promise<{ root: string; runtime: OsnovaRuntime; projec
 
 async function sessionFixture(item: Awaited<ReturnType<typeof fixture>>): Promise<string> {
   const session = await createSession(item.runtime.projects.get(item.projectPath), { title: "Loop" });
-  await import("@osnova/project").then((project) => project.appendSessionEvent(item.projectPath, session.id, { type: "user-message", data: { content: "Explain self-attention using my notes." } }));
+  await import("@queryn/project").then((project) => project.appendSessionEvent(item.projectPath, session.id, { type: "user-message", data: { content: "Explain self-attention using my notes." } }));
   return session.id;
 }
 
@@ -67,7 +67,7 @@ test("provider protocol parses tool calls in streaming and non-streaming modes",
       }
       if (body.stream) {
         // Arguments JSON is deliberately split across chunks mid-string.
-        const first = `data: ${JSON.stringify({ model: "m1", choices: [{ delta: { tool_calls: [{ index: 0, id: "call_7", function: { name: "osnova.project.search", arguments: "{\"qu" } }] } }] })}\r\n`;
+        const first = `data: ${JSON.stringify({ model: "m1", choices: [{ delta: { tool_calls: [{ index: 0, id: "call_7", function: { name: "queryn.project.search", arguments: "{\"qu" } }] } }] })}\r\n`;
         const second = `data: ${JSON.stringify({ model: "m1", choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "ery\":\"attention\"}" } }] } }] })}\r\n`;
         const third = `data: ${JSON.stringify({ model: "m1", choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\r\n`;
         const encoder = new TextEncoder();
@@ -82,15 +82,15 @@ test("provider protocol parses tool calls in streaming and non-streaming modes",
       }
       return new Response(JSON.stringify({
         model: "m1",
-        choices: [{ message: { content: null, tool_calls: [{ id: "call_9", function: { name: "osnova.project.read", arguments: "{\"path\":\"notes/a.md\"}" } }] }, finish_reason: "tool_calls" }]
+        choices: [{ message: { content: null, tool_calls: [{ id: "call_9", function: { name: "queryn.project.read", arguments: "{\"path\":\"notes/a.md\"}" } }] }, finish_reason: "tool_calls" }]
       }), { headers: { "content-type": "application/json" } });
     }) as typeof fetch;
     const provider = new OpenAICompatibleProvider("test.local", "http://127.0.0.1:1234/v1/", { async set() {}, async get() { return undefined; }, async delete() {} });
     const streamed = await provider.complete({ model: "m1", messages: [{ role: "user", content: "hi" }], tools: [{ name: "t", parameters: {} }], onTextDelta: () => undefined });
-    assert.deepEqual(streamed.toolCalls, [{ id: "call_7", name: "osnova.project.search", argumentsJson: "{\"query\":\"attention\"}" }]);
+    assert.deepEqual(streamed.toolCalls, [{ id: "call_7", name: "queryn.project.search", argumentsJson: "{\"query\":\"attention\"}" }]);
     assert.equal(streamed.finishReason, "tool_calls");
     const nonStreamed = await provider.complete({ model: "m1", messages: [{ role: "user", content: "hi" }] });
-    assert.deepEqual(nonStreamed.toolCalls, [{ id: "call_9", name: "osnova.project.read", argumentsJson: "{\"path\":\"notes/a.md\"}" }]);
+    assert.deepEqual(nonStreamed.toolCalls, [{ id: "call_9", name: "queryn.project.read", argumentsJson: "{\"path\":\"notes/a.md\"}" }]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -145,8 +145,8 @@ test("agent loop searches, reads and answers with observable activity", async ()
     item.runtime.agent.on("output.delta", (event) => deltas.push((event as { delta: string }).delta));
 
     const provider = scriptedProvider("test.loop", "local", [
-      { toolCalls: [{ id: "c1", name: "osnova.project.search", argumentsJson: JSON.stringify({ query: "attention" }) }], usage: { inputTokens: 40, outputTokens: 4 } },
-      { toolCalls: [{ id: "c2", name: "osnova.project.read", argumentsJson: JSON.stringify({ path: note.relativePath }) }], usage: { inputTokens: 50, outputTokens: 4 } },
+      { toolCalls: [{ id: "c1", name: "queryn.project.search", argumentsJson: JSON.stringify({ query: "attention" }) }], usage: { inputTokens: 40, outputTokens: 4 } },
+      { toolCalls: [{ id: "c2", name: "queryn.project.read", argumentsJson: JSON.stringify({ path: note.relativePath }) }], usage: { inputTokens: 50, outputTokens: 4 } },
       { text: "Self-attention uses queries, keys and values.", usage: { inputTokens: 120, outputTokens: 8 } }
     ]);
     item.runtime.agent.registerProvider(provider);
@@ -177,7 +177,7 @@ test("agent loop searches, reads and answers with observable activity", async ()
     assert.match(deltas.join(""), /Self-attention uses/);
     const kinds = activities.map((activity) => (activity as { kind?: string }).kind);
     assert.equal(kinds.includes("tool"), true);
-    assert.equal(activities.some((activity) => (activity as { status?: string }).status === "completed" && (activity as { operationId?: string }).operationId === "osnova.project.search"), true);
+    assert.equal(activities.some((activity) => (activity as { status?: string }).status === "completed" && (activity as { operationId?: string }).operationId === "queryn.project.search"), true);
     // Second model turn must contain the observation of the first call.
     const secondRequest = provider.seenRequests[1];
     const lastMessage = secondRequest.messages.at(-1) as { role: string };
@@ -192,12 +192,12 @@ test("invalid tool arguments become an error observation the model can correct",
   try {
     const sessionId = await sessionFixture(item);
     const provider = scriptedProvider("test.invalid", "local", [
-      { toolCalls: [{ id: "b1", name: "osnova.project.search", argumentsJson: "{}" }] },
+      { toolCalls: [{ id: "b1", name: "queryn.project.search", argumentsJson: "{}" }] },
       (request: ModelRequest) => {
         const last = request.messages.at(-1) as { role: string; content: string };
         assert.equal(last.role, "tool");
         assert.match(last.content, /Invalid arguments/);
-        return { toolCalls: [{ id: "b2", name: "osnova.project.search", argumentsJson: JSON.stringify({ query: "anything" }) }] };
+        return { toolCalls: [{ id: "b2", name: "queryn.project.search", argumentsJson: JSON.stringify({ query: "anything" }) }] };
       },
       { text: "Recovered." }
     ]);
@@ -223,8 +223,8 @@ async function privilegedFixture(item: Awaited<ReturnType<typeof fixture>>): Pro
       risk: "external-side-effect", agentVisibility: "automatic", execution: "immediate",
       permissions: ["network:use"]
     },
-    extensionId: "osnova.builtin",
-    runtime: { id: "osnova.builtin", kind: "builtin", lifecycle: "shared" }
+    extensionId: "queryn.builtin",
+    runtime: { id: "queryn.builtin", kind: "builtin", lifecycle: "shared" }
   }, async () => {
     calls += 1;
     return { structured: { done: true, calls } };
@@ -287,13 +287,13 @@ test("sensitive material refuses to enter a cloud context but stays readable loc
     const project = item.runtime.projects.get(item.projectPath);
     const secret = await createNote(project, { title: "Secret", body: "PRIVATE_TOKEN_9911" });
     await registerExistingArtifact(project, {
-      type: "osnova.note", projectRelativePath: secret.relativePath,
+      type: "queryn.note", projectRelativePath: secret.relativePath,
       metadata: { sensitivity: "sensitive" }, context: { mode: "automatic" }
     });
     const sessionId = await sessionFixture(item);
 
     const cloudProvider = scriptedProvider("test.cloud", "cloud", [
-      { toolCalls: [{ id: "s1", name: "osnova.project.read", argumentsJson: JSON.stringify({ path: secret.relativePath }) }] },
+      { toolCalls: [{ id: "s1", name: "queryn.project.read", argumentsJson: JSON.stringify({ path: secret.relativePath }) }] },
       { text: "Noted." }
     ]);
     item.runtime.agent.registerProvider(cloudProvider);
@@ -310,7 +310,7 @@ test("sensitive material refuses to enter a cloud context but stays readable loc
 
     const localSessionId = await sessionFixture(item);
     const localProvider = scriptedProvider("test.localread", "local", [
-      { toolCalls: [{ id: "s2", name: "osnova.project.read", argumentsJson: JSON.stringify({ path: secret.relativePath }) }] },
+      { toolCalls: [{ id: "s2", name: "queryn.project.read", argumentsJson: JSON.stringify({ path: secret.relativePath }) }] },
       { text: "Read locally." }
     ]);
     item.runtime.agent.registerProvider(localProvider);
@@ -328,7 +328,7 @@ test("step budget forces a final answer without tools", async () => {
   try {
     const sessionId = await sessionFixture(item);
     const provider = scriptedProvider("test.budget", "local", [
-      { toolCalls: [{ id: "m1", name: "osnova.project.search", argumentsJson: JSON.stringify({ query: "x" }) }] },
+      { toolCalls: [{ id: "m1", name: "queryn.project.search", argumentsJson: JSON.stringify({ query: "x" }) }] },
       { text: "Forced summary." }
     ]);
     item.runtime.agent.registerProvider(provider);
@@ -347,24 +347,24 @@ test("history builder pairs tool calls with observations and drops dangling call
   const base = { schemaVersion: "1" as const, sessionId: "s", sequence: 0, timestamp: new Date().toISOString() };
   const events = [
     { ...base, id: "e1", type: "user-message" as const, data: { content: "Goal" } },
-    { ...base, id: "e2", type: "tool-call" as const, data: { callId: "pair", operationId: "osnova.project.search", arguments: { query: "q" } } },
-    { ...base, id: "e3", type: "observation" as const, data: { callId: "pair", operationId: "osnova.project.search", ok: true, content: "{\"matches\":[]}", artifactIds: [] } },
-    { ...base, id: "e4", type: "tool-call" as const, data: { callId: "dangling", operationId: "osnova.notes.create", arguments: { title: "T" } } },
+    { ...base, id: "e2", type: "tool-call" as const, data: { callId: "pair", operationId: "queryn.project.search", arguments: { query: "q" } } },
+    { ...base, id: "e3", type: "observation" as const, data: { callId: "pair", operationId: "queryn.project.search", ok: true, content: "{\"matches\":[]}", artifactIds: [] } },
+    { ...base, id: "e4", type: "tool-call" as const, data: { callId: "dangling", operationId: "queryn.notes.create", arguments: { title: "T" } } },
     { ...base, id: "e5", type: "assistant-message" as const, data: { content: "Answer" } }
   ];
   const built = buildConversationHistory(events);
   const roles = built.messages.map((message) => message.role);
   assert.deepEqual(roles, ["user", "assistant", "tool", "assistant"]);
   const assistantWithCall = built.messages.find((message): message is Extract<ModelChatMessage, { role: "assistant" }> => message.role === "assistant");
-  assert.equal(assistantWithCall?.toolCalls?.[0]?.name, "osnova.project.search");
+  assert.equal(assistantWithCall?.toolCalls?.[0]?.name, "queryn.project.search");
 });
 
 test("history builder excludes events hidden by a portable session tombstone", () => {
   const base = { schemaVersion: "1" as const, sessionId: "s", sequence: 0, timestamp: new Date().toISOString() };
   const events: SessionEvent[] = [
     { ...base, id: "user", type: "user-message", data: { content: "Goal" } },
-    { ...base, id: "call", type: "tool-call", data: { callId: "pair", operationId: "osnova.project.search", arguments: { query: "q" } } },
-    { ...base, id: "observation", type: "observation", data: { callId: "pair", operationId: "osnova.project.search", content: "Result" } },
+    { ...base, id: "call", type: "tool-call", data: { callId: "pair", operationId: "queryn.project.search", arguments: { query: "q" } } },
+    { ...base, id: "observation", type: "observation", data: { callId: "pair", operationId: "queryn.project.search", content: "Result" } },
     { ...base, id: "answer", type: "assistant-message", data: { content: "Hidden answer" } },
     { ...base, id: "tombstone", type: "status", data: { kind: "events-hidden", eventIds: ["call", "observation", "answer"] } }
   ];

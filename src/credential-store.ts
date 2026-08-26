@@ -12,7 +12,7 @@ export interface CredentialStore {
   delete(account: string): Promise<void>;
 }
 
-export function createSystemCredentialStore(dataRoot: string, service = "dev.osnova.runtime"): CredentialStore {
+export function createSystemCredentialStore(dataRoot: string, service = "dev.queryn.runtime"): CredentialStore {
   if (process.platform === "darwin") return new MacKeychainStore(service);
   if (process.platform === "win32") return new WindowsDpapiStore(path.join(dataRoot, "credentials"));
   return new UnsupportedCredentialStore();

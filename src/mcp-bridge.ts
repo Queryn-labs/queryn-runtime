@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import type { OperationDefinition, OperationRisk } from "@osnova/types";
+import type { OperationDefinition, OperationRisk } from "@queryn/types";
 import type { OperationRegistry } from "./operation-registry.js";
 import { StdioToolClient } from "./tool-client.js";
 
@@ -24,7 +24,7 @@ const MCP_PROTOCOL_VERSION = "2025-06-18";
 
 /**
  * Connects local stdio MCP servers and exposes their tools to the runtime
- * registry under the `osnova.mcp.<server>` extension namespace. Registering a
+ * registry under the `queryn.mcp.<server>` extension namespace. Registering a
  * server is an operator-level action (local configuration = trust anchor);
  * individual tools still go through the standard risk/approval machinery.
  */
@@ -51,7 +51,7 @@ export class McpBridge {
       await client.request("initialize", {
         protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: "osnova", version: "0.2.0" }
+        clientInfo: { name: "queryn", version: "0.2.0" }
       }, { timeoutMs: 20_000 });
       client.notify("notifications/initialized");
       const listed = await client.request<{ tools?: McpTool[] }>("tools/list", {}, { timeoutMs: 20_000 });
@@ -77,7 +77,7 @@ export class McpBridge {
   }
 
   // Every mapped tool carries explicit permissions and risk metadata before registration.
-  // see osnova-docs/docs/adr/adr-0013-agent-network-tools.md
+  // see queryn-docs/docs/adr/adr-0013-agent-network-tools.md
   mapToolDefinitions(server: McpServerDescriptor, tools: McpTool[]): Array<{ definition: OperationDefinition; toolName: string }> {
     return tools.map((tool) => ({
       toolName: tool.name,
@@ -117,7 +117,7 @@ export class McpBridge {
   }
 
   registerInto(registry: OperationRegistry, server: McpServerDescriptor, tools: McpTool[]): number {
-    const extensionId = `osnova.mcp.${server.id}`;
+    const extensionId = `queryn.mcp.${server.id}`;
     let count = 0;
     for (const mapped of this.mapToolDefinitions(server, tools)) {
       const serverId = server.id;
@@ -126,7 +126,7 @@ export class McpBridge {
         definition: mapped.definition,
         extensionId,
         extensionVersion: "1",
-        runtime: { id: "osnova.builtin", kind: "builtin", lifecycle: "shared" }
+        runtime: { id: "queryn.builtin", kind: "builtin", lifecycle: "shared" }
       }, async ({ arguments: args, signal }) => {
         const result = await this.call(serverId, toolName, args, signal);
         return result as Record<string, unknown>;

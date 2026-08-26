@@ -1,5 +1,5 @@
-import type { ArtifactDescriptor, ArtifactProvenance, OsnovaProject } from "@osnova/types";
-import { publishArtifact } from "@osnova/project";
+import type { ArtifactDescriptor, ArtifactProvenance, QuerynProject } from "@queryn/types";
+import { publishArtifact } from "@queryn/project";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { EventEmitter } from "node:events";
@@ -24,7 +24,7 @@ export interface IngestPolicy {
 
 export class ArtifactIngestor extends EventEmitter {
   async publish(
-    project: OsnovaProject,
+    project: QuerynProject,
     outboxPath: string,
     candidates: ArtifactCandidate[],
     provenance: ArtifactProvenance,
@@ -61,7 +61,7 @@ export class ArtifactIngestor extends EventEmitter {
     }
   }
 
-  notifyPublished(project: OsnovaProject, descriptors: ArtifactDescriptor[]): void {
+  notifyPublished(project: QuerynProject, descriptors: ArtifactDescriptor[]): void {
     if (descriptors.length) this.emit("published", { projectPath: project.rootPath, artifacts: structuredClone(descriptors) });
   }
 }

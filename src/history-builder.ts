@@ -1,4 +1,4 @@
-import type { SessionEvent } from "@osnova/types";
+import type { SessionEvent } from "@queryn/types";
 import type { ModelChatMessage } from "./model-provider.js";
 
 const TOOL_MESSAGE_MAX_CHARS = 6_000;

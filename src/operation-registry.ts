@@ -1,4 +1,4 @@
-import type { OperationDefinition, RuntimeDescriptor } from "@osnova/types";
+import type { OperationDefinition, RuntimeDescriptor } from "@queryn/types";
 import { validateJsonSchema } from "./schema.js";
 
 export interface RegisteredOperation {
@@ -26,7 +26,7 @@ export class OperationRegistry {
   readonly #builtinHandlers = new Map<string, BuiltinOperationHandler>();
 
   register(operation: RegisteredOperation, handler?: BuiltinOperationHandler): void {
-    const key = operation.extensionId === "osnova.builtin" ? "builtin" : operation.extensionVersion;
+    const key = operation.extensionId === "queryn.builtin" ? "builtin" : operation.extensionVersion;
     if (!key) throw new Error(`Extension version is required for ${operation.definition.id}.`);
     const versions = this.#operations.get(operation.definition.id) ?? new Map<string, RegisteredOperation>();
     if (versions.has(key)) throw new Error(`Operation already registered: ${operation.definition.id}@${key}`);

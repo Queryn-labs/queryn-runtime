@@ -1,4 +1,4 @@
-name: Reborn backend
+name: Queryn backend
 
 on:
   push:
@@ -14,30 +14,30 @@ jobs:
       - name: Checkout product documentation
         uses: actions/checkout@v4
         with:
-          repository: Queryn-labs/osnova-docs
-          token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
-          path: osnova-docs
+          repository: Queryn-labs/queryn-docs
+          token: ${{ secrets.QUERYN_REPO_TOKEN || github.token }}
+          path: queryn-docs
 
       - name: Checkout public specification
         uses: actions/checkout@v4
         with:
-          repository: Queryn-labs/osnova-spec
-          token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
-          path: osnova-spec
+          repository: Queryn-labs/queryn-spec
+          token: ${{ secrets.QUERYN_REPO_TOKEN || github.token }}
+          path: queryn-spec
 
       - name: Checkout core types
         uses: actions/checkout@v4
         with:
-          repository: Queryn-labs/osnova-core
-          token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
-          path: osnova-core
+          repository: Queryn-labs/queryn-core
+          token: ${{ secrets.QUERYN_REPO_TOKEN || github.token }}
+          path: queryn-core
 
       - name: Checkout extension SDK types
         uses: actions/checkout@v4
         with:
-          repository: Queryn-labs/osnova-plugin-sdk
-          token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
-          path: osnova-plugin-sdk
+          repository: Queryn-labs/queryn-sdk
+          token: ${{ secrets.QUERYN_REPO_TOKEN || github.token }}
+          path: queryn-sdk
 
       - uses: actions/setup-node@v4
         with:
@@ -48,28 +48,28 @@ jobs:
           version: 10.5.2
 
       - name: Parse public JSON contracts
-        working-directory: osnova-spec
+        working-directory: queryn-spec
         shell: bash
-        run: node scripts/verify-contracts.mjs --core ../osnova-core --sdk ../osnova-plugin-sdk
+        run: node scripts/verify-contracts.mjs --core ../queryn-core --sdk ../queryn-sdk
 
       - name: Install documentation gate dependencies
-        working-directory: osnova-spec
+        working-directory: queryn-spec
         run: pnpm install --frozen-lockfile
 
       - name: Install Mermaid browser
-        working-directory: osnova-spec
+        working-directory: queryn-spec
         run: node node_modules/puppeteer/install.mjs
 
       - name: Install documentation dependencies
-        working-directory: osnova-docs
+        working-directory: queryn-docs
         run: pnpm install --frozen-lockfile
 
       - name: Documentation checks
-        working-directory: osnova-spec
+        working-directory: queryn-spec
         run: pnpm docs:check
 
       - name: Build normative documentation
-        working-directory: osnova-docs
+        working-directory: queryn-docs
         run: |
           pnpm build
 
@@ -83,42 +83,42 @@ jobs:
       - name: Checkout runtime
         uses: actions/checkout@v4
         with:
-          path: osnova-runtime
+          path: queryn-runtime
 
       - name: Checkout public specification
         uses: actions/checkout@v4
         with:
-          repository: Queryn-labs/osnova-spec
-          token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
-          path: osnova-spec
+          repository: Queryn-labs/queryn-spec
+          token: ${{ secrets.QUERYN_REPO_TOKEN || github.token }}
+          path: queryn-spec
 
       - name: Checkout core
         uses: actions/checkout@v4
         with:
-          repository: Queryn-labs/osnova-core
-          token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
-          path: osnova-core
+          repository: Queryn-labs/queryn-core
+          token: ${{ secrets.QUERYN_REPO_TOKEN || github.token }}
+          path: queryn-core
 
       - name: Checkout extension SDK
         uses: actions/checkout@v4
         with:
-          repository: Queryn-labs/osnova-plugin-sdk
-          token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
-          path: osnova-plugin-sdk
+          repository: Queryn-labs/queryn-sdk
+          token: ${{ secrets.QUERYN_REPO_TOKEN || github.token }}
+          path: queryn-sdk
 
       - name: Checkout extension examples
         uses: actions/checkout@v4
         with:
-          repository: Queryn-labs/osnova-plugins
-          token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
-          path: osnova-plugins
+          repository: Queryn-labs/queryn-extensions
+          token: ${{ secrets.QUERYN_REPO_TOKEN || github.token }}
+          path: queryn-extensions
 
       - name: Checkout desktop bridge
         uses: actions/checkout@v4
         with:
-          repository: Queryn-labs/osnova-desktop
-          token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
-          path: osnova-desktop
+          repository: Queryn-labs/queryn-desktop
+          token: ${{ secrets.QUERYN_REPO_TOKEN || github.token }}
+          path: queryn-desktop
 
       - uses: actions/setup-node@v4
         with:
@@ -129,13 +129,13 @@ jobs:
           version: 10.5.2
 
       - name: Specification tools
-        working-directory: osnova-spec
+        working-directory: queryn-spec
         env:
           PUPPETEER_SKIP_DOWNLOAD: "true"
         run: pnpm install --frozen-lockfile
 
       - name: Core contracts
-        working-directory: osnova-core
+        working-directory: queryn-core
         run: |
           pnpm install --frozen-lockfile
           pnpm build
@@ -143,14 +143,14 @@ jobs:
           pnpm lint
 
       - name: Extension SDK
-        working-directory: osnova-plugin-sdk
+        working-directory: queryn-sdk
         run: |
           pnpm install --frozen-lockfile
           pnpm test
           pnpm typecheck
 
       - name: Runtime and headless CLI
-        working-directory: osnova-runtime
+        working-directory: queryn-runtime
         run: |
           pnpm install --frozen-lockfile
           pnpm test
@@ -158,22 +158,22 @@ jobs:
           pnpm typecheck
 
       - name: Reference extensions
-        working-directory: osnova-plugins
+        working-directory: queryn-extensions
         run: |
           pnpm install --frozen-lockfile
           pnpm test
           pnpm test:runtime
 
       - name: Desktop backend bridge
-        working-directory: osnova-desktop
+        working-directory: queryn-desktop
         run: |
           pnpm install --frozen-lockfile
           pnpm build
 
       - name: Comment hygiene
-        working-directory: osnova-runtime
+        working-directory: queryn-runtime
         shell: bash
         run: |
-          for r in osnova-core osnova-plugin-sdk osnova-runtime osnova-desktop osnova-plugins; do
-            node ../osnova-spec/scripts/check-comment-hygiene.mjs --check --repo "$r"
+          for r in queryn-core queryn-sdk queryn-runtime queryn-desktop queryn-extensions; do
+            node ../queryn-spec/scripts/check-comment-hygiene.mjs --check --repo "$r"
           done

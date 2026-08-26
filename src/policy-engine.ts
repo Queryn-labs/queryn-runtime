@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ApprovalDecision, OperationDefinition, Permission } from "@osnova/types";
+import type { ApprovalDecision, OperationDefinition, Permission } from "@queryn/types";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeJsonAtomic } from "./atomic.js";
@@ -39,7 +39,7 @@ export class PolicyEngine {
       return { allowed: false, approvalRequired: false, reason: "Required permissions were not granted to the project.", missingPermissions };
     }
     // High-impact risks fail closed until a project-scoped approval rule exists.
-    // see osnova-docs/docs/adr/adr-0010-agent-risk-policy.md
+    // see queryn-docs/docs/adr/adr-0010-agent-risk-policy.md
     const approvalRequired = ["network-egress", "external-side-effect", "privileged"].includes(operation.risk)
       && !this.#approvalRules.has(this.#ruleKey(projectPath, operation.id));
     return { allowed: true, approvalRequired, missingPermissions: [] };
