@@ -1,6 +1,9 @@
 # Архитектура osnova-runtime
 
-`osnova-runtime` — обязательный локальный backend Osnova Reborn. Desktop main process и headless CLI используют версионированный JSON-RPC 2.0 поверх Unix socket или named pipe.
+`osnova-runtime` — обязательный локальный backend Osnova Reborn. Desktop main
+process использует версионированный JSON-RPC 2.0 поверх Unix socket или named
+pipe. Headless CLI в основном вызывает те же runtime-сервисы напрямую, а
+команда `serve` отдельно поднимает JSON-RPC boundary.
 
 ## Сервисы
 
@@ -12,20 +15,22 @@
 - Artifact Ingestor — единственная точка проверки и публикации extension outbox
   в проект. Привилегированные built-ins используют атомарные core API и обязаны
   вернуть `publishedArtifactIds` в тот же job/session/artifact contract.
-- Session Store — переносимая история запросов, планов, вызовов и подтверждений.
+- Session Store — переносимая история запросов, сообщений, вызовов и подтверждений.
 - Context Broker — компактный каталог, точечное исследование проекта и
   расширенный контекст с бюджетом и источниками.
 - Connector Engine — возобновляемые project-scoped импорты.
 - Model Manager — content-addressed cache и проверка зависимостей.
-- Agent Orchestrator — видимый ограниченный план без доступа к shell и поток
-  пользовательского ответа.
+- Agent Orchestrator — граница провайдеров и поток пользовательского ответа,
+  делегируемый единому `AgentKernel` tool-loop без доступа к shell.
 - Diagnostics — проверка среды без требования AI или Docker.
 
-Agent Orchestrator перед планированием выполняет ограниченную стадию только для
-чтения.
-Модель выбирает пути и артефакты из каталога, Context Broker
-проверяет их принадлежность открытому проекту и раскрывает только подходящие
-данные. Пользовательский ответ передаётся через `agent.output.delta`, а итог
+`agent.chat` передаёт в `AgentKernel` историю сессии и схемы доступных операций.
+Ядро принимает текст и вызовы операций, исполняет их через Job Manager,
+получает observations и продолжает диалог до финального ответа. Рискованный
+вызов может перевести job и chat run в `waiting-approval`, после чего
+`agent.chat.approve` продолжает именно этот вызов. Отдельный AgentPlan,
+pipeline и стадия предварительного планирования в текущем runtime отсутствуют.
+Пользовательский ответ передаётся через `agent.output.delta`, а итог
 сохраняется в переносимой истории сессии.
 
 Для каждого обращения к модели Agent Kernel измеряет длительность и время до
@@ -80,6 +85,10 @@ tools продолжают работать.
 MCP adapter отображает Tools в Operations, `resources/read` в Context Envelope,
 а экспериментальный MCP task — во внутреннее ожидание Osnova Job. Отмена и
 таймаут принадлежат Job Manager Osnova; MCP task не становится источником истины.
+Регистрация MCP-сервера доступна через API runtime и тестовые сценарии, но
+методы `mcp.server.*` пока не входят в dispatch публичного RPC. Desktop bridge
+не должен считать эти методы рабочим end-to-end пользовательским путём до
+добавления dispatch.
 
 Model Manager пишет локальные project-to-digest usage records при reconcile
 extension lock. `model.remove` сам вычисляет dependents и не доверяет переданному

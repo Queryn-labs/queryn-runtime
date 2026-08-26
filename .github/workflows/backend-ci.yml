@@ -14,28 +14,28 @@ jobs:
       - name: Checkout product documentation
         uses: actions/checkout@v4
         with:
-          repository: Osnova-labs/osnova-docs
+          repository: Queryn-labs/osnova-docs
           token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
           path: osnova-docs
 
       - name: Checkout public specification
         uses: actions/checkout@v4
         with:
-          repository: Osnova-labs/osnova-spec
+          repository: Queryn-labs/osnova-spec
           token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
           path: osnova-spec
 
       - name: Checkout core types
         uses: actions/checkout@v4
         with:
-          repository: Osnova-labs/osnova-core
+          repository: Queryn-labs/osnova-core
           token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
           path: osnova-core
 
       - name: Checkout extension SDK types
         uses: actions/checkout@v4
         with:
-          repository: Osnova-labs/osnova-plugin-sdk
+          repository: Queryn-labs/osnova-plugin-sdk
           token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
           path: osnova-plugin-sdk
 
@@ -52,10 +52,25 @@ jobs:
         shell: bash
         run: node scripts/verify-contracts.mjs --core ../osnova-core --sdk ../osnova-plugin-sdk
 
+      - name: Install documentation gate dependencies
+        working-directory: osnova-spec
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Mermaid browser
+        working-directory: osnova-spec
+        run: node node_modules/puppeteer/install.mjs
+
+      - name: Install documentation dependencies
+        working-directory: osnova-docs
+        run: pnpm install --frozen-lockfile
+
+      - name: Documentation checks
+        working-directory: osnova-spec
+        run: pnpm docs:check
+
       - name: Build normative documentation
         working-directory: osnova-docs
         run: |
-          pnpm install --frozen-lockfile
           pnpm build
 
   backend:
@@ -73,35 +88,35 @@ jobs:
       - name: Checkout public specification
         uses: actions/checkout@v4
         with:
-          repository: Osnova-labs/osnova-spec
+          repository: Queryn-labs/osnova-spec
           token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
           path: osnova-spec
 
       - name: Checkout core
         uses: actions/checkout@v4
         with:
-          repository: Osnova-labs/osnova-core
+          repository: Queryn-labs/osnova-core
           token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
           path: osnova-core
 
       - name: Checkout extension SDK
         uses: actions/checkout@v4
         with:
-          repository: Osnova-labs/osnova-plugin-sdk
+          repository: Queryn-labs/osnova-plugin-sdk
           token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
           path: osnova-plugin-sdk
 
       - name: Checkout extension examples
         uses: actions/checkout@v4
         with:
-          repository: Osnova-labs/osnova-plugins
+          repository: Queryn-labs/osnova-plugins
           token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
           path: osnova-plugins
 
       - name: Checkout desktop bridge
         uses: actions/checkout@v4
         with:
-          repository: Osnova-labs/osnova-desktop
+          repository: Queryn-labs/osnova-desktop
           token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
           path: osnova-desktop
 
@@ -115,6 +130,8 @@ jobs:
 
       - name: Specification tools
         working-directory: osnova-spec
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "true"
         run: pnpm install --frozen-lockfile
 
       - name: Core contracts
