@@ -38,6 +38,8 @@ export class PolicyEngine {
     if (missingPermissions.length) {
       return { allowed: false, approvalRequired: false, reason: "Required permissions were not granted to the project.", missingPermissions };
     }
+    // High-impact risks fail closed until a project-scoped approval rule exists.
+    // see osnova-docs/docs/adr/adr-0010-agent-risk-policy.md
     const approvalRequired = ["network-egress", "external-side-effect", "privileged"].includes(operation.risk)
       && !this.#approvalRules.has(this.#ruleKey(projectPath, operation.id));
     return { allowed: true, approvalRequired, missingPermissions: [] };
@@ -50,7 +52,9 @@ export class PolicyEngine {
         this.#grants.set(this.#grantKey(projectPath, extensionId), new Set(permissions));
       }
       for (const operationId of value.operations ?? []) this.#approvalRules.add(this.#ruleKey(projectPath, operationId));
-    } catch {}
+    } catch {
+      // Missing or corrupt derived policy state fails closed with no grants or remembered approvals.
+    }
   }
 
   async rememberApproval(projectPath: string, operationId: string, decision: ApprovalDecision): Promise<void> {

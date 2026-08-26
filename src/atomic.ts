@@ -10,6 +10,8 @@ export async function writeTextAtomic(filePath: string, value: string): Promise<
   await mkdir(path.dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.${randomUUID()}.tmp`;
   try {
+    // A same-directory rename publishes the complete file atomically on its filesystem.
+    // Owner-only mode protects both the temporary file and the committed project data.
     await writeFile(temporaryPath, value, { encoding: "utf8", mode: 0o600 });
     await rename(temporaryPath, filePath);
   } catch (error) {
@@ -30,6 +32,7 @@ export function assertSafeRelativePath(relativePath: string): string {
 export async function resolveSafeExistingFile(rootPath: string, relativePath: string, label = "File"): Promise<string> {
   const normalized = assertSafeRelativePath(relativePath);
   const candidate = path.join(rootPath, ...normalized.split("/"));
+  // Lexical traversal checks cannot detect symlink escapes, so require canonical containment and a regular file.
   const [canonicalRoot, canonicalCandidate, candidateStat] = await Promise.all([realpath(rootPath), realpath(candidate), lstat(candidate)]);
   const relative = path.relative(canonicalRoot, canonicalCandidate);
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(`${label} escapes its allowed root: ${relativePath}`);

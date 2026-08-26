@@ -1,8 +1,6 @@
 /**
- * Тип-only публичный вход osnova-runtime.
- * Канонические DTO рантайма, реэкспортированные из мест объявления,
- * чтобы consumer'ы (renderer osnova-desktop и др.) не дублировали их.
- * Только типы: в бандл рантайм-код не попадает.
+ * Type-only public entry point for osnova-runtime.
+ * Re-exports canonical runtime DTOs without adding runtime code to the bundle.
  */
 export type {
   TokenCountSource,

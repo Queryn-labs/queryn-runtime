@@ -83,12 +83,16 @@ export class ExtensionManager {
     const versionRoot = this.#versionRoot(packed.manifest.id, packed.manifest.version);
     try {
       const installed = JSON.parse(await readFile(path.join(versionRoot, ".install.json"), "utf8")) as { integrity: string };
+      // Installed versions are immutable, so only an identical integrity may reactivate one.
       if (installed.integrity !== packed.integrity) throw new Error("An installed extension version is immutable and has different contents.");
       await this.activate(packed.manifest.id, packed.manifest.version);
       return { id: packed.manifest.id, version: packed.manifest.version, path: versionRoot, active: true, manifest: packed.manifest };
     } catch (error) {
+      // Only a missing install record starts a fresh install; every other failure must surface.
       if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     }
+    // Unique staging names isolate concurrent installers before rename publishes a complete version tree.
+    // see osnova-docs/docs/adr/adr-0004-plugin-system.md
     const staging = `${versionRoot}.staging-${process.pid}-${Date.now()}`;
     await rm(staging, { recursive: true, force: true });
     await mkdir(staging, { recursive: true });
@@ -140,7 +144,7 @@ export class ExtensionManager {
       for (const extension of extensions.filter((entry) => entry.isDirectory())) {
         const id = `${publisher.name}.${extension.name}`;
         let activeVersion: string | undefined;
-        try { activeVersion = (JSON.parse(await readFile(this.#activePath(id), "utf8")) as { version: string }).version; } catch {}
+        try { activeVersion = (JSON.parse(await readFile(this.#activePath(id), "utf8")) as { version: string }).version; } catch { /* No active marker means no version is active. */ }
         const versionsPath = path.join(root, publisher.name, extension.name, "versions");
         let versions;
         try { versions = await readdir(versionsPath, { withFileTypes: true }); } catch { continue; }

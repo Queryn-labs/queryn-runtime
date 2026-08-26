@@ -70,6 +70,13 @@ jobs:
         with:
           path: osnova-runtime
 
+      - name: Checkout public specification
+        uses: actions/checkout@v4
+        with:
+          repository: Osnova-labs/osnova-spec
+          token: ${{ secrets.OSNOVA_REPO_TOKEN || github.token }}
+          path: osnova-spec
+
       - name: Checkout core
         uses: actions/checkout@v4
         with:
@@ -106,6 +113,10 @@ jobs:
         with:
           version: 10.5.2
 
+      - name: Specification tools
+        working-directory: osnova-spec
+        run: pnpm install --frozen-lockfile
+
       - name: Core contracts
         working-directory: osnova-core
         run: |
@@ -141,3 +152,11 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
+
+      - name: Comment hygiene
+        working-directory: osnova-runtime
+        shell: bash
+        run: |
+          for r in osnova-core osnova-plugin-sdk osnova-runtime osnova-desktop osnova-plugins; do
+            node ../osnova-spec/scripts/check-comment-hygiene.mjs --check --repo "$r"
+          done

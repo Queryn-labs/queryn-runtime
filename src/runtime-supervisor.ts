@@ -53,6 +53,8 @@ interface ManagedProcess {
   idleTimer?: NodeJS.Timeout;
 }
 
+// Process-backed runtimes are isolated by lifecycle state, scoped paths, and explicit protocol calls.
+// see osnova-docs/docs/adr/adr-0008-runtime-supervisor.md
 export class RuntimeSupervisor extends EventEmitter {
   readonly #states = new Map<string, RuntimeState>();
   readonly #processes = new Map<string, ManagedProcess>();

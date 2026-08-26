@@ -8,6 +8,8 @@ export interface FetchedPage {
   truncated: boolean;
 }
 
+// Network tools accept only HTTP(S) and bound response bytes before parsing.
+// see osnova-docs/docs/adr/adr-0013-agent-network-tools.md
 /** Fetches a public HTTP(S) page and reduces it to readable plain text. */
 export async function fetchPageText(rawUrl: string, maxChars = 8_000): Promise<FetchedPage> {
   let url: URL;

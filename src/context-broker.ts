@@ -5,6 +5,18 @@ import type { ApprovalDecision, ArtifactDescriptor, ContextEnvelope, ContextLeve
 import { writeJsonAtomic } from "./atomic.js";
 import { resolveSafeExistingFile } from "./atomic.js";
 
+const MAX_VISIBLE_NOTES = 60;
+const MAX_VISIBLE_ASSETS = 40;
+const MAX_VISIBLE_ARTIFACTS = 30;
+
+// The research envelope limits results so the expanded context stays compact:
+// at most this many ranked notes and requested asset files per envelope.
+const MAX_RESEARCH_NOTES = 12;
+const MAX_RESEARCH_ASSETS = 8;
+
+// These catalog caps match the compact-envelope budget in the context policy.
+// see osnova-docs/docs/adr/adr-0009-context-policy.md
+
 export interface ContextRequest {
   projectPath: string;
   artifactIds?: string[];
@@ -60,9 +72,9 @@ export class ContextBroker {
     const materialPaths = new Set([...notes.map((note) => note.relativePath), ...assets.map((asset) => asset.relativePath)]);
     const visibleArtifacts = artifacts
       .filter((artifact) => !artifact.payloads.length || artifact.payloads.some((payload) => !materialPaths.has(payload.path)))
-      .slice(0, 30);
-    const visibleNotes = notes.slice(0, 60);
-    const visibleAssets = assets.slice(0, 40);
+      .slice(0, MAX_VISIBLE_ARTIFACTS);
+    const visibleNotes = notes.slice(0, MAX_VISIBLE_NOTES);
+    const visibleAssets = assets.slice(0, MAX_VISIBLE_ASSETS);
     const lines = [
       `Project context catalog: ${notes.length} notes, ${assets.length} files, ${artifacts.length} registered artifacts.`,
       ...visibleNotes.map((note) => `- note: ${note.title} (${note.relativePath})`),
@@ -141,7 +153,7 @@ export class ContextBroker {
     const rankedNotes = candidates
       .filter((candidate) => candidate.score > 0 && candidate.mode !== "none" && candidate.mode !== "custom")
       .sort((left, right) => right.score - left.score || (right.note.updatedAt ?? "").localeCompare(left.note.updatedAt ?? ""))
-      .slice(0, 12);
+      .slice(0, MAX_RESEARCH_NOTES);
     const requestedAssetPaths = (request.projectRelativePaths ?? []).filter((relativePath) => assetsByPath.has(relativePath));
 
     let remaining = Math.max(0, request.budgetTokens);
@@ -176,7 +188,7 @@ export class ContextBroker {
       recipients = recipients.filter((recipient) => noteRecipients.includes(recipient));
     }
 
-    for (const relativePath of requestedAssetPaths.slice(0, 8)) {
+    for (const relativePath of requestedAssetPaths.slice(0, MAX_RESEARCH_ASSETS)) {
       if (remaining <= 0) { truncated = true; break; }
       const asset = assetsByPath.get(relativePath);
       if (!asset) continue;
@@ -571,9 +583,9 @@ function normalizeCustomEnvelope(
 ): ContextEnvelope {
   const limited = truncate(candidate.text ?? "", budgetTokens);
   const payloadPaths = new Set(artifact.payloads.map((payload) => payload.path));
-  const sources = candidate.sources
-    .filter((source) => source.artifactId === artifact.id && (!source.payloadPath || payloadPaths.has(source.payloadPath)))
-    .map((source) => ({ ...source, providerId: source.providerId ?? artifact.context?.providerId }));
+  const sources: ContextEnvelope["sources"] = candidate.sources
+    .filter((source) => source.artifactId === artifact.id && (!source.payloadPath || (typeof source.payloadPath === "string" && payloadPaths.has(source.payloadPath))))
+    .map((source) => ({ ...source, providerId: typeof source.providerId === "string" ? source.providerId : artifact.context?.providerId }));
   if (!sources.length) sources.push({ artifactId: artifact.id, providerId: artifact.context?.providerId });
   const sensitivity = hostSensitivity === "sensitive" || candidate.sensitivity === "sensitive"
     ? "sensitive"

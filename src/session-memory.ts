@@ -16,6 +16,8 @@ function eventText(event: SessionEvent): string | undefined {
   return typeof content === "string" && content.trim() ? content : undefined;
 }
 
+// Session memory is read-only over project logs and returns bounded snippets as references.
+// see osnova-docs/docs/adr/adr-0011-cross-session-memory.md
 export async function searchSessions(projectPath: string, query: string, limit = 8): Promise<SessionMemoryMatch[]> {
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (terms.length === 0) return [];

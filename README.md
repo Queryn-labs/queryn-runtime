@@ -22,6 +22,8 @@ node dist/cli.js serve
 node dist/cli.js help
 ```
 
+В отдельном клоне `npm run pretest` ожидает соседний репозиторий `../osnova-spec` со скриптами проверки контрактов и гигиены комментариев. Для локального запуска клонируйте `osnova-spec` рядом с runtime или используйте layout из CI.
+
 Запуск `serve` печатает JSON с адресом сокета и токеном. Эти данные предназначены для desktop main process или headless-клиента, а не для renderer.
 
 Одноразовый CLI покрывает проекты, миграции, extensions, sessions, operations,

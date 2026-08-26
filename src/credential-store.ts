@@ -1,3 +1,7 @@
+/**
+ * Cross-platform credential storage using macOS Keychain or Windows DPAPI.
+ * Unsupported platforms throw on set and return undefined or no-op for get/delete.
+ */
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -17,13 +21,16 @@ export function createSystemCredentialStore(dataRoot: string, service = "dev.osn
 class MacKeychainStore implements CredentialStore {
   constructor(readonly service: string) {}
   async set(account: string, secret: string): Promise<void> {
+    // The -U flag makes repeated writes update the same Keychain item in place.
     await run("security", ["add-generic-password", "-U", "-s", this.service, "-a", account, "-w"], `${secret}\n`);
   }
   async get(account: string): Promise<string | undefined> {
+    // Missing or unreadable Keychain entries fail closed as no credential.
     try { return (await run("security", ["find-generic-password", "-s", this.service, "-a", account, "-w"])).trim(); }
     catch { return undefined; }
   }
   async delete(account: string): Promise<void> {
+    // Treat a missing item as already deleted so cleanup remains idempotent.
     try { await run("security", ["delete-generic-password", "-s", this.service, "-a", account]); } catch {}
   }
 }
@@ -32,12 +39,14 @@ class WindowsDpapiStore implements CredentialStore {
   constructor(readonly root: string) {}
   async set(account: string, secret: string): Promise<void> {
     await mkdir(this.root, { recursive: true });
+    // CurrentUser scope prevents another account from decrypting credentials. Machine scope is disallowed by policy.
     const script = "$s=[Console]::In.ReadToEnd();$b=[Text.Encoding]::UTF8.GetBytes($s);$e=[Security.Cryptography.ProtectedData]::Protect($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser);[Convert]::ToBase64String($e)";
     const encrypted = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], secret);
     await writeFile(this.#path(account), encrypted.trim(), { encoding: "utf8", mode: 0o600 });
   }
   async get(account: string): Promise<string | undefined> {
     let encrypted: string;
+    // Missing or unreadable DPAPI files fail closed as no credential.
     try { encrypted = await readFile(this.#path(account), "utf8"); } catch { return undefined; }
     const script = "$s=[Console]::In.ReadToEnd();$b=[Convert]::FromBase64String($s);$d=[Security.Cryptography.ProtectedData]::Unprotect($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser);[Text.Encoding]::UTF8.GetString($d)";
     return (await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], encrypted)).trim();
@@ -61,6 +70,7 @@ function run(command: string, args: string[], stdin?: string): Promise<string> {
     child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
     child.once("error", reject);
     child.once("exit", (code) => code === 0 ? resolve(Buffer.concat(output).toString("utf8")) : reject(new Error(Buffer.concat(errors).toString("utf8") || `${command} exited ${code}`)));
+    // Feed secrets through stdin so they never appear in the process argument list.
     child.stdin.end(stdin);
   });
 }

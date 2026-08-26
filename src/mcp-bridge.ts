@@ -76,6 +76,8 @@ export class McpBridge {
     await Promise.all([...this.#sessions.keys()].map((serverId) => this.disconnect(serverId)));
   }
 
+  // Every mapped tool carries explicit permissions and risk metadata before registration.
+  // see osnova-docs/docs/adr/adr-0013-agent-network-tools.md
   mapToolDefinitions(server: McpServerDescriptor, tools: McpTool[]): Array<{ definition: OperationDefinition; toolName: string }> {
     return tools.map((tool) => ({
       toolName: tool.name,

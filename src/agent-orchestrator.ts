@@ -91,6 +91,8 @@ export class AgentOrchestrator extends EventEmitter {
     }));
   }
 
+  // Provider authorization completes before the kernel starts a model-driven run.
+  // see osnova-docs/docs/adr/adr-0012-unified-agent-loop.md
   /** Tool-loop engine: one conversational agent turn per user message. */
   async chat(input: CreateChatInput): Promise<ChatRun> {
     const provider = input.providerId ? this.#providers.get(input.providerId) : undefined;

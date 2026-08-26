@@ -330,6 +330,7 @@ export class AgentKernel extends EventEmitter {
     this.#activity(run, { kind: "tool", status: "running", title: phrase.title, detail: phrase.detail, operationId: call.name, callId });
 
     // The assistant turn must exist in the log before its observation is appended.
+    // see osnova-docs/docs/adr/adr-0012-unified-agent-loop.md
     await appendSessionEvent(run.projectPath, run.sessionId!, {
       type: "tool-call",
       data: { requestId: run.requestId, runId: run.id, callId, operationId: call.name, arguments: parsedArguments }
