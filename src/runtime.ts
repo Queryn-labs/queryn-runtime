@@ -2,7 +2,9 @@ import os from "node:os";
 import path from "node:path";
 import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 import { createNote, createArtifactRelation, importAsset, listArtifacts, listAssets, listNotes, readNote, registerExistingArtifact } from "@queryn/project";
-import type { ApprovalDecision, OperationDefinition, RuntimeDescriptor } from "@queryn/types";
+import type { ApprovalDecision, ModelProviderConfig, ModelProviderTemplate, ModelProviderTransport, OperationDefinition, RecipientKind, RuntimeDescriptor } from "@queryn/types";
+import type { CredentialStore } from "./credential-store.js";
+import type { ModelProvider } from "./model-provider.js";
 import { AgentKernel } from "./agent-kernel.js";
 import { AgentOrchestrator } from "./agent-orchestrator.js";
 import { ArtifactIngestor } from "./artifact-ingestor.js";
@@ -16,6 +18,7 @@ import { JobManager } from "./job-manager.js";
 import { McpBridge, type McpServerDescriptor } from "./mcp-bridge.js";
 import { ModelManager } from "./model-manager.js";
 import { OpenAICompatibleProvider } from "./model-provider.js";
+import { findModelProviderTemplate, inferModelProviderTemplateId, listModelProviderTemplates as listBuiltinModelProviderTemplates } from "./model-provider-templates.js";
 import { OperationRegistry } from "./operation-registry.js";
 import { OperationService } from "./operation-service.js";
 import { PolicyEngine } from "./policy-engine.js";
@@ -25,12 +28,14 @@ import { stageModels } from "./operation-service.js";
 import { readSessionTranscript, searchSessions } from "./session-memory.js";
 import { fetchPageText } from "./web-fetch.js";
 
-export interface ModelProviderConfig {
-  id: string;
-  type: "openai-compatible";
-  endpoint: string;
-  credentialAccount?: string;
-}
+
+type ProviderTransportFactory = (config: ModelProviderConfig, credentials: CredentialStore) => ModelProvider;
+
+/** Maps every public provider transport to its runtime implementation. */
+const PROVIDER_TRANSPORTS: Record<ModelProviderTransport, ProviderTransportFactory> = {
+  "openai-compatible": (config, credentials) =>
+    new OpenAICompatibleProvider(config.id, config.endpoint, credentials, config.recipient, config.credentialAccount)
+};
 
 export class QuerynRuntime {
   readonly projects = new ProjectService();
@@ -44,19 +49,19 @@ export class QuerynRuntime {
   readonly indexer = new ProjectIndexer();
   readonly connectors: ConnectorEngine;
   readonly models: ModelManager;
-  readonly credentials;
+  readonly credentials: CredentialStore;
   readonly operations: OperationService;
   readonly agent: AgentOrchestrator;
   readonly agentKernel: AgentKernel;
   readonly mcp = new McpBridge();
   readonly diagnostics: DiagnosticsService;
 
-  constructor(readonly dataRoot = defaultRuntimeDataRoot()) {
+  constructor(readonly dataRoot = defaultRuntimeDataRoot(), dependencies: { credentialStore?: CredentialStore } = {}) {
     this.policy = new PolicyEngine(dataRoot);
     this.connectors = new ConnectorEngine(this.ingestor, this.policy);
     this.jobs = new JobManager(dataRoot);
     this.models = new ModelManager(dataRoot);
-    this.credentials = createSystemCredentialStore(dataRoot);
+    this.credentials = dependencies.credentialStore ?? createSystemCredentialStore(dataRoot);
     this.operations = new OperationService(dataRoot, this.projects, this.registry, this.policy, this.jobs, this.supervisor, this.ingestor, this.models);
     this.agentKernel = new AgentKernel(dataRoot, this.registry, this.operations, this.jobs, this.context, this.indexer);
     this.agent = new AgentOrchestrator(this.registry, this.operations, this.agentKernel);
@@ -82,23 +87,47 @@ export class QuerynRuntime {
     return this.projects.get(project.rootPath);
   }
 
+  listModelProviderTemplates(): ModelProviderTemplate[] {
+    return listBuiltinModelProviderTemplates();
+  }
+
   async configureModelProvider(config: ModelProviderConfig, secret?: string): Promise<ModelProviderConfig> {
-    if (!/^[a-z0-9][a-z0-9._-]+$/.test(config.id)) throw new Error("Model provider id must be namespaced.");
-    const endpoint = new URL(config.endpoint);
-    if (endpoint.protocol !== "https:" && !["127.0.0.1", "localhost", "::1"].includes(endpoint.hostname)) throw new Error("Cloud model providers require HTTPS.");
+    const normalized = normalizeModelProviderConfig(config);
+    if (!normalized) throw new Error("Invalid model provider configuration.");
+    validateModelProviderConfig(normalized);
+    const current = await this.listModelProviderConfigs();
+    const previous = current.find((item) => item.id === normalized.id);
     if (secret) {
-      if (!config.credentialAccount) throw new Error("credentialAccount is required when saving a secret.");
-      await this.credentials.set(config.credentialAccount, secret);
+      if (!normalized.credentialAccount) throw new Error("credentialAccount is required when saving a secret.");
+      await this.credentials.set(normalized.credentialAccount, secret);
     }
-    const configs = [...(await this.listModelProviderConfigs()).filter((item) => item.id !== config.id), config].sort((left, right) => left.id.localeCompare(right.id));
+    const configs = [...current.filter((item) => item.id !== normalized.id), normalized].sort((left, right) => left.id.localeCompare(right.id));
     await writeJsonAtomic(path.join(this.dataRoot, "model-providers.json"), configs);
-    this.#registerModelProvider(config);
-    return config;
+    this.#registerModelProvider(normalized);
+    if (previous?.credentialAccount && previous.credentialAccount !== normalized.credentialAccount && !configs.some((item) => item.credentialAccount === previous.credentialAccount)) {
+      await this.credentials.delete(previous.credentialAccount);
+    }
+    return normalized;
   }
 
   async listModelProviderConfigs(): Promise<ModelProviderConfig[]> {
-    try { return JSON.parse(await readFile(path.join(this.dataRoot, "model-providers.json"), "utf8")) as ModelProviderConfig[]; }
+    let raw: unknown;
+    try { raw = JSON.parse(await readFile(path.join(this.dataRoot, "model-providers.json"), "utf8")); }
     catch { return []; }
+    return normalizeModelProviderConfigs(raw);
+  }
+
+  /** Removes a configured provider, unregisters it live and deletes its credential unless another provider still uses the account. */
+  async removeModelProvider(id: string): Promise<void> {
+    const configs = await this.listModelProviderConfigs();
+    const target = configs.find((item) => item.id === id);
+    if (!target) throw new Error(`Model provider is not configured: ${id}`);
+    const remaining = configs.filter((item) => item.id !== id);
+    await writeJsonAtomic(path.join(this.dataRoot, "model-providers.json"), remaining);
+    this.agent.unregisterProvider(id);
+    if (target.credentialAccount && !remaining.some((item) => item.credentialAccount === target.credentialAccount)) {
+      await this.credentials.delete(target.credentialAccount);
+    }
   }
 
   async syncConnector(projectPath: string, connectorId: string, approval?: ApprovalDecision) {
@@ -159,8 +188,70 @@ export class QuerynRuntime {
   }
 
   #registerModelProvider(config: ModelProviderConfig): void {
-    if (config.type === "openai-compatible") this.agent.registerProvider(new OpenAICompatibleProvider(config.id, config.endpoint, this.credentials, config.credentialAccount));
+    const factory = PROVIDER_TRANSPORTS[config.type];
+    if (!factory) return;
+    this.agent.registerProvider(factory(config, this.credentials));
   }
+}
+
+function normalizeModelProviderConfigs(raw: unknown): ModelProviderConfig[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry): ModelProviderConfig[] => {
+    const config = normalizeModelProviderConfig(entry);
+    if (!config) return [];
+    try { validateModelProviderConfig(config); }
+    catch { return []; }
+    return [config];
+  });
+}
+
+function normalizeModelProviderConfig(value: unknown): ModelProviderConfig | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const item = value as Record<string, unknown>;
+  if (item.type !== "openai-compatible" || typeof item.id !== "string" || typeof item.endpoint !== "string") return undefined;
+  const id = item.id.trim();
+  const endpoint = item.endpoint.trim();
+  let parsedEndpoint: URL;
+  try { parsedEndpoint = new URL(endpoint); }
+  catch { return undefined; }
+  const suppliedTemplateId = typeof item.templateId === "string" ? item.templateId.trim() || undefined : undefined;
+  const declaredTemplate = suppliedTemplateId ? findModelProviderTemplate(suppliedTemplateId) : undefined;
+  const recipient: RecipientKind = item.recipient === "cloud" || item.recipient === "local"
+    ? item.recipient
+    : declaredTemplate?.group ?? (isLoopback(parsedEndpoint) ? "local" : "cloud");
+  const templateId = suppliedTemplateId ?? inferModelProviderTemplateId(recipient, endpoint);
+  const credentialAccount = typeof item.credentialAccount === "string" ? item.credentialAccount.trim() : "";
+  return {
+    id,
+    templateId,
+    type: "openai-compatible",
+    endpoint,
+    ...(credentialAccount ? { credentialAccount } : {}),
+    recipient
+  };
+}
+
+function validateModelProviderConfig(config: ModelProviderConfig): void {
+  if (!/^[a-z0-9][a-z0-9._-]+$/.test(config.id)) throw new Error("Model provider id must use lowercase letters, digits, dots, underscores or hyphens.");
+  const template = findModelProviderTemplate(config.templateId);
+  if (!template) throw new Error(`Unknown model provider template: ${config.templateId}.`);
+  if (template.transport !== config.type) throw new Error(`Template ${template.id} does not support transport ${config.type}.`);
+  if (template.group !== config.recipient) throw new Error(`Template ${template.id} requires recipient ${template.group}.`);
+  const endpoint = new URL(config.endpoint);
+  if (endpoint.username || endpoint.password) throw new Error("Model provider endpoints cannot contain embedded credentials.");
+  if (endpoint.search || endpoint.hash) throw new Error("Model provider endpoints cannot contain a query string or fragment.");
+  const loopback = isLoopback(endpoint);
+  if (config.recipient === "local" && (!loopback || !["http:", "https:"].includes(endpoint.protocol))) {
+    throw new Error("Local model providers require an HTTP or HTTPS loopback endpoint.");
+  }
+  if (config.recipient === "cloud" && (loopback || endpoint.protocol !== "https:")) {
+    throw new Error("Cloud model providers require an HTTPS endpoint outside loopback.");
+  }
+  if (!PROVIDER_TRANSPORTS[config.type]) throw new Error(`Unsupported model provider transport: ${config.type}.`);
+}
+
+function isLoopback(endpoint: URL): boolean {
+  return ["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname);
 }
 
 export function defaultRuntimeDataRoot(): string {

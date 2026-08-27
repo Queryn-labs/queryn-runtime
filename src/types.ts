@@ -17,4 +17,4 @@ export type {
 export type { InstalledExtension } from "./extension-manager.js";
 export type { RegisteredOperation } from "./operation-registry.js";
 export type { ModelProviderModel } from "./model-provider.js";
-export type { ModelProviderConfig } from "./runtime.js";
+export type { ModelProviderConfig, ModelProviderTemplate, ModelProviderTransport, ModelProviderAuthMode, RecipientKind } from "@queryn/types";

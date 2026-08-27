@@ -65,6 +65,8 @@ export class AgentOrchestrator extends EventEmitter {
   }
 
   registerProvider(provider: ModelProvider): void { this.#providers.set(provider.id, provider); }
+
+  unregisterProvider(id: string): void { this.#providers.delete(id); }
   listProviders(): Array<{ id: string; recipient: "local" | "cloud"; sourceExtensionId?: string; permissions: string[]; risk: string }> {
     return [...this.#providers.values()].map(({ id, recipient, sourceExtensionId, permissions = [], risk = "safe-read" }) => ({ id, recipient, sourceExtensionId, permissions, risk }));
   }

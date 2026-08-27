@@ -85,7 +85,7 @@ test("provider protocol parses tool calls in streaming and non-streaming modes",
         choices: [{ message: { content: null, tool_calls: [{ id: "call_9", function: { name: "queryn.project.read", arguments: "{\"path\":\"notes/a.md\"}" } }] }, finish_reason: "tool_calls" }]
       }), { headers: { "content-type": "application/json" } });
     }) as typeof fetch;
-    const provider = new OpenAICompatibleProvider("test.local", "http://127.0.0.1:1234/v1/", { async set() {}, async get() { return undefined; }, async delete() {} });
+    const provider = new OpenAICompatibleProvider("test.local", "http://127.0.0.1:1234/v1/", { async set() {}, async get() { return undefined; }, async delete() {} }, "local");
     const streamed = await provider.complete({ model: "m1", messages: [{ role: "user", content: "hi" }], tools: [{ name: "t", parameters: {} }], onTextDelta: () => undefined });
     assert.deepEqual(streamed.toolCalls, [{ id: "call_7", name: "queryn.project.search", argumentsJson: "{\"query\":\"attention\"}" }]);
     assert.equal(streamed.finishReason, "tool_calls");
@@ -120,7 +120,7 @@ test("OpenAI-compatible provider lists and normalizes available models", async (
         return "secret";
       },
       async delete() {}
-    }, "test-account");
+    }, "local", "test-account");
     assert.deepEqual(await provider.listModels(), [
       { id: "alpha", created: 2 },
       { id: "zeta", ownedBy: "local" }

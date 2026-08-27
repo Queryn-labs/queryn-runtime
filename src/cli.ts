@@ -31,13 +31,16 @@ async function main(): Promise<void> {
     if (command === "extension:rollback") { await runtime.extensions.rollback(required("--extension"), required("--version")); return print({ rolledBack: true }); }
     if (command === "runtime:stop") { await runtime.supervisor.stop(optional("--runtime")); return print(runtime.status()); }
     if (command === "model:list") return print(await runtime.models.list());
+    if (command === "model:provider-template-list") return print(runtime.listModelProviderTemplates());
     if (command === "model:provider-list") return print(runtime.agent.listProviders());
+    if (command === "model:provider-config-list") return print(await runtime.listModelProviderConfigs());
     if (command === "model:install") return print(await runtime.models.install(jsonObject(required("--dependency")) as never, { allowNetwork: flag("--allow-network") }));
     if (command === "model:remove") { await runtime.removeModel(required("--sha256")); return print({ removed: true }); }
     if (command === "model:provider-configure") {
       const secret = flag("--secret-stdin") ? (await readStandardInput()).trimEnd() : undefined;
       return print(await runtime.configureModelProvider(jsonObject(required("--config")) as never, secret || undefined));
     }
+    if (command === "model:provider-remove") { await runtime.removeModelProvider(required("--provider")); return print({ removed: true }); }
     if (command === "job:get") return print(runtime.jobs.get(required("--job")));
     if (command === "job:list") return print(runtime.jobs.list(optional("--project")));
     if (command === "job:cancel") return print(await runtime.jobs.cancel(required("--job")));
@@ -131,5 +134,5 @@ function waitForJob(runtime: QuerynRuntime, jobId: string, predicate: (job: Retu
 async function readStandardInput(): Promise<string> { let value = ""; for await (const chunk of process.stdin) value += String(chunk); return value; }
 function print(value: unknown): void { process.stdout.write(`${JSON.stringify(value, null, 2)}\n`); }
 function printHelp(): void {
-  process.stdout.write(`queryn-runtime 0.2\n\nCommands:\n  serve | doctor | status | selftest\n  project:create|open|validate|migrate\n  extension:install|update|list|rollback|connect|disconnect\n  runtime:start|stop\n  session:create|list|events\n  operation:list|invoke | approval:decide\n  artifact:list|publish\n  context:preview|resolve|reindex\n  connector:list|sync\n  model:list|install|remove|provider-list|provider-configure\n  job:get|list|cancel\n\nUse --project PATH for project-scoped commands. Secrets are accepted only with --secret-stdin.\n`);
+  process.stdout.write(`queryn-runtime 0.2\n\nCommands:\n  serve | doctor | status | selftest\n  project:create|open|validate|migrate\n  extension:install|update|list|rollback|connect|disconnect\n  runtime:start|stop\n  session:create|list|events\n  operation:list|invoke | approval:decide\n  artifact:list|publish\n  context:preview|resolve|reindex\n  connector:list|sync\n  model:list|install|remove|provider-template-list|provider-list|provider-config-list|provider-configure|provider-remove\n  job:get|list|cancel\n\nUse --project PATH for project-scoped commands. Secrets are accepted only with --secret-stdin.\n`);
 }

@@ -153,11 +153,13 @@ async function dispatch(runtime: QuerynRuntime, method: string, params: Record<s
     case "job.subscribe": return { subscribed: true };
     case "model.install": return runtime.models.install(params.dependency as never, { allowNetwork: params.allowNetwork === true });
     case "model.list": return runtime.models.list();
+    case "model.provider.template-list": return runtime.listModelProviderTemplates();
     case "model.provider.configure": return runtime.configureModelProvider(params.config as never, optionalString(params.secret));
     case "model.provider.config-list": return runtime.listModelProviderConfigs();
     case "model.provider.list": return runtime.agent.listProviders();
     case "model.provider.models-list": return runtime.agent.listProviderModels();
     case "credential.remove": await runtime.credentials.delete(requiredString(params, "account")); return { ok: true };
+    case "model.provider.remove": await runtime.removeModelProvider(requiredString(params, "providerId")); return { ok: true };
     case "model.remove": await runtime.removeModel(requiredString(params, "sha256")); return { ok: true };
     case "diagnostics.doctor": return runtime.diagnostics.doctor(optionalString(params.projectPath));
     case "diagnostics.export": {

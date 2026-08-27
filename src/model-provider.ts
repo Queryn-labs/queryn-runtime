@@ -1,4 +1,4 @@
-import type { OperationRisk, Permission } from "@queryn/types";
+import type { OperationRisk, Permission, RecipientKind } from "@queryn/types";
 import type { CredentialStore } from "./credential-store.js";
 import { readBoundedJsonResponse } from "./tool-client.js";
 
@@ -61,11 +61,13 @@ export interface ModelProvider {
 }
 
 export class OpenAICompatibleProvider implements ModelProvider {
-  readonly recipient: "local" | "cloud";
-  constructor(readonly id: string, readonly endpoint: string, readonly credentials: CredentialStore, readonly credentialAccount?: string) {
-    const host = new URL(endpoint).hostname;
-    this.recipient = ["127.0.0.1", "localhost", "::1"].includes(host) ? "local" : "cloud";
-  }
+  constructor(
+    readonly id: string,
+    readonly endpoint: string,
+    readonly credentials: CredentialStore,
+    readonly recipient: RecipientKind,
+    readonly credentialAccount?: string
+  ) {}
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const key = this.credentialAccount ? await this.credentials.get(this.credentialAccount) : undefined;

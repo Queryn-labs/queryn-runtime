@@ -143,7 +143,7 @@ test("OpenAI-compatible replies stream as plain text while plans remain bounded 
     }) as typeof fetch;
     const provider = new OpenAICompatibleProvider("test.local", "http://127.0.0.1:1234/v1/", {
       async set() {}, async get() { return undefined; }, async delete() {}
-    });
+    }, "local");
     const deltas: string[] = [];
     const reply = await requestAgentReply(provider, "local-1", "Поздоровайся", "", "/project", {
       onDelta: (delta) => deltas.push(delta)
@@ -323,7 +323,7 @@ test("model manager verifies content and provider config never enters the projec
     const sha256 = createHash("sha256").update(payload).digest("hex");
     const model = await item.runtime.models.install({ id: "example.model", version: "1", source: payloadPath, sha256, size: payload.length, license: "MIT", platforms: [process.platform as "darwin" | "win32"] });
     assert.equal((await item.runtime.models.resolve(model.sha256)).id, "example.model");
-    await item.runtime.configureModelProvider({ id: "example.local", type: "openai-compatible", endpoint: "http://127.0.0.1:1234/v1/" });
+    await item.runtime.configureModelProvider({ id: "example.local", templateId: "local.lm-studio", type: "openai-compatible", endpoint: "http://127.0.0.1:1234/v1/", recipient: "local" });
     const projectManifest = await readFile(path.join(item.projectPath, "queryn.json"), "utf8");
     assert.equal(projectManifest.includes("example.local"), false);
     const usagePath = path.join(item.root, "runtime", "model-usage", "project.json");
@@ -334,6 +334,60 @@ test("model manager verifies content and provider config never enters the projec
     await item.runtime.removeModel(sha256);
     await assert.rejects(() => item.runtime.models.resolve(sha256), /not installed/);
   } finally { await rm(item.root, { recursive: true, force: true }); }
+});
+
+test("provider templates migrate legacy configs and credential cleanup follows live registration", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "queryn-provider-test-"));
+  const runtimeRoot = path.join(root, "runtime");
+  const credentials = new Map<string, string>();
+  const deletedAccounts: string[] = [];
+  await mkdir(runtimeRoot, { recursive: true });
+  await writeFile(path.join(runtimeRoot, "model-providers.json"), JSON.stringify([
+    { id: "legacy.local", type: "openai-compatible", endpoint: "http://localhost:11434/v1", credentialAccount: "shared-account" },
+    { id: "legacy.cloud", type: "openai-compatible", endpoint: "https://api.openai.com/v1", credentialAccount: "shared-account" },
+    { id: "unsafe.local", type: "openai-compatible", endpoint: "https://example.com/v1", recipient: "local" }
+  ]));
+  const runtime = new QuerynRuntime(runtimeRoot, {
+    credentialStore: {
+      async set(account, secret) { credentials.set(account, secret); },
+      async get(account) { return credentials.get(account); },
+      async delete(account) { credentials.delete(account); deletedAccounts.push(account); }
+    }
+  });
+  try {
+    await runtime.initialize();
+    const templates = runtime.listModelProviderTemplates();
+    assert.equal(new Set(templates.map((template) => template.id)).size, templates.length);
+    assert.equal(templates.some((template) => template.id === "local.ollama"), true);
+    assert.equal(templates.some((template) => template.id === "cloud.openai"), true);
+    templates[0].displayName = "Changed by caller";
+    assert.notEqual(runtime.listModelProviderTemplates()[0].displayName, "Changed by caller");
+
+    assert.deepEqual(await runtime.listModelProviderConfigs(), [
+      { id: "legacy.local", templateId: "local.ollama", type: "openai-compatible", endpoint: "http://localhost:11434/v1", credentialAccount: "shared-account", recipient: "local" },
+      { id: "legacy.cloud", templateId: "cloud.openai", type: "openai-compatible", endpoint: "https://api.openai.com/v1", credentialAccount: "shared-account", recipient: "cloud" }
+    ]);
+    assert.deepEqual(runtime.agent.listProviders().map((provider) => provider.id), ["legacy.local", "legacy.cloud"]);
+
+    await assert.rejects(() => runtime.configureModelProvider({ id: "invalid.local", templateId: "local.ollama", type: "openai-compatible", endpoint: "https://example.com/v1", recipient: "local" }), /loopback endpoint/);
+    await assert.rejects(() => runtime.configureModelProvider({ id: "invalid.cloud", templateId: "local.ollama", type: "openai-compatible", endpoint: "https://example.com/v1", recipient: "cloud" }), /requires recipient local/);
+    await assert.rejects(() => runtime.configureModelProvider({ id: "invalid.template", templateId: "missing", type: "openai-compatible", endpoint: "https://example.com/v1", recipient: "cloud" }), /Unknown model provider template/);
+    assert.deepEqual(await runtime.configureModelProvider({ id: "ipv6.local", templateId: "local.openai-compatible", type: "openai-compatible", endpoint: "http://[::1]:9090/v1", recipient: "local" }), {
+      id: "ipv6.local", templateId: "local.openai-compatible", type: "openai-compatible", endpoint: "http://[::1]:9090/v1", recipient: "local"
+    });
+    await runtime.removeModelProvider("ipv6.local");
+
+    await runtime.removeModelProvider("legacy.local");
+    assert.deepEqual(deletedAccounts, []);
+    assert.deepEqual(runtime.agent.listProviders().map((provider) => provider.id), ["legacy.cloud"]);
+    await runtime.removeModelProvider("legacy.cloud");
+    assert.deepEqual(deletedAccounts, ["shared-account"]);
+    assert.deepEqual(runtime.agent.listProviders(), []);
+    await assert.rejects(() => runtime.removeModelProvider("legacy.cloud"), /not configured/);
+  } finally {
+    await runtime.shutdown();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("connector checkpoints after atomic artifact publication", async () => {
@@ -552,6 +606,16 @@ test("local RPC rejects a wrong token and executes an operation", async (context
     await assert.rejects(() => bad.request("runtime.status"), /Unauthorized/);
     bad.close();
     const client = new RpcClient(server.address, server.token);
+    const templates = await client.request<Array<{ id: string }>>("model.provider.template-list");
+    assert.equal(templates.some((template) => template.id === "local.ollama"), true);
+    await client.request("model.provider.configure", {
+      config: { id: "rpc.local", templateId: "local.ollama", type: "openai-compatible", endpoint: "http://127.0.0.1:11434/v1", recipient: "local" }
+    });
+    assert.deepEqual(await client.request<Array<{ id: string }>>("model.provider.config-list"), [
+      { id: "rpc.local", templateId: "local.ollama", type: "openai-compatible", endpoint: "http://127.0.0.1:11434/v1", recipient: "local" }
+    ]);
+    await client.request("model.provider.remove", { providerId: "rpc.local" });
+    assert.deepEqual(await client.request("model.provider.config-list"), []);
     await rm(path.join(item.projectPath, "sessions"), { recursive: true, force: true });
     const session = await client.request<{ id: string }>("session.create", {
       projectPath: item.projectPath,
