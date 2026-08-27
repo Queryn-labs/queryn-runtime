@@ -3,14 +3,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { appendSessionEvent, createSession, readSession, updateSession } from "@osnova/project";
+import { appendSessionEvent, createSession, readSession, updateSession } from "@queryn/project";
 import type { ModelRequest } from "./model-provider.js";
-import { OsnovaRuntime } from "./runtime.js";
+import { QuerynRuntime } from "./runtime.js";
 import { readSessionTranscript, searchSessions } from "./session-memory.js";
 
-async function fixture(): Promise<{ root: string; runtime: OsnovaRuntime; projectPath: string }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "osnova-session-memory-test-"));
-  const runtime = new OsnovaRuntime(path.join(root, "runtime"));
+async function fixture(): Promise<{ root: string; runtime: QuerynRuntime; projectPath: string }> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "queryn-session-memory-test-"));
+  const runtime = new QuerynRuntime(path.join(root, "runtime"));
   await runtime.initialize();
   const projectPath = path.join(root, "project");
   await runtime.projects.create({ rootPath: projectPath, id: "test", name: "Test" });
@@ -73,8 +73,8 @@ test("full memory exposes session tools, search finds past dialogue, off hides t
     assert.match(systemPrompt, /Past research \(/);
     assert.match(systemPrompt, /Full memory is enabled/);
     const names = toolNames(provider.seenRequests[0]);
-    assert.equal(names.includes("osnova.session.search"), true);
-    assert.equal(names.includes("osnova.session.read"), true);
+    assert.equal(names.includes("queryn.session.search"), true);
+    assert.equal(names.includes("queryn.session.read"), true);
 
     // Without full memory the session tools must be absent from the same project's schema set.
     const third = await createSession(item.runtime.projects.get(item.projectPath), { title: "Private" });
@@ -87,8 +87,8 @@ test("full memory exposes session tools, search finds past dialogue, off hides t
     });
     assert.equal(privateRun.status, "succeeded");
     const privateNames = toolNames(provider.seenRequests[1]);
-    assert.equal(privateNames.includes("osnova.session.search"), false);
-    assert.equal(privateNames.includes("osnova.session.read"), false);
+    assert.equal(privateNames.includes("queryn.session.search"), false);
+    assert.equal(privateNames.includes("queryn.session.read"), false);
     assert.match(provider.seenRequests[1].messages[0]!.content ?? "", /Past sessions:/);
   } finally {
     await rm(item.root, { recursive: true, force: true });

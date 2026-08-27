@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { appendSessionEvent, listSessions, readSession, readSessionEvents } from "@osnova/project";
-import type { JobDescriptor } from "@osnova/types";
+import { appendSessionEvent, listSessions, readSession, readSessionEvents } from "@queryn/project";
+import type { JobDescriptor } from "@queryn/types";
 import { writeJsonAtomic } from "./atomic.js";
 import type { ContextBroker } from "./context-broker.js";
 import { buildConversationHistory, trimHistoryToBudget } from "./history-builder.js";
@@ -19,7 +19,7 @@ const MAX_STEPS_LIMIT = 50;
 const DEFAULT_MAX_DURATION_SECONDS = 1_800;
 const DEFAULT_HISTORY_BUDGET_TOKENS = 24_000;
 const OBSERVATION_MAX_CHARS = 4_000;
-export const PROGRESS_TOOL = "osnova.progress";
+export const PROGRESS_TOOL = "queryn.progress";
 
 export type TokenCountSource = "provider" | "estimated" | "mixed";
 
@@ -330,7 +330,7 @@ export class AgentKernel extends EventEmitter {
     this.#activity(run, { kind: "tool", status: "running", title: phrase.title, detail: phrase.detail, operationId: call.name, callId });
 
     // The assistant turn must exist in the log before its observation is appended.
-    // see osnova-docs/docs/adr/adr-0012-unified-agent-loop.md
+    // see queryn-docs/docs/adr/adr-0012-unified-agent-loop.md
     await appendSessionEvent(run.projectPath, run.sessionId!, {
       type: "tool-call",
       data: { requestId: run.requestId, runId: run.id, callId, operationId: call.name, arguments: parsedArguments }
@@ -434,10 +434,10 @@ export class AgentKernel extends EventEmitter {
 
   async #systemPrompt(run: ChatRun): Promise<string> {
     const lines = [
-      "You are the Osnova project agent working locally inside the user's knowledge project.",
+      "You are the Queryn project agent working locally inside the user's knowledge project.",
       "Rules:",
       "1. Answer greetings, small talk and general-knowledge questions directly without any tools.",
-      "2. Use project tools only when the answer depends on this project's materials. Before stating facts about the project, discover them with tools: osnova.project.search / osnova.project.list, then osnova.project.read or osnova.artifact.resolve for specifics.",
+      "2. Use project tools only when the answer depends on this project's materials. Before stating facts about the project, discover them with tools: queryn.project.search / queryn.project.list, then queryn.project.read or queryn.artifact.resolve for specifics.",
       "3. Prefer one targeted search over several broad ones; never repeat an identical search.",
       `4. Call ${PROGRESS_TOOL} with {"message": "..."} whenever you switch to a new phase of work. Use a short phrase in the user's language.`,
       "5. While working on a multi-step task, occasionally write a short paragraph (before calling the next tool) summarizing what you have established so far and what you will do next, in the user's language.",
@@ -453,7 +453,7 @@ export class AgentKernel extends EventEmitter {
         .join("\n");
       if (past) lines.push(`Past sessions:\n${past}`);
       if (run.sessionId && (await readSession(run.projectPath, run.sessionId)).memoryMode === "full") {
-        lines.push("Full memory is enabled for this session: you can search past dialogues with osnova.session.search and read them with osnova.session.read.");
+        lines.push("Full memory is enabled for this session: you can search past dialogues with queryn.session.search and read them with queryn.session.read.");
       }
     } catch { /* A missing session catalog must not break the loop. */ }
     if (run.sessionId) {
@@ -474,7 +474,7 @@ export class AgentKernel extends EventEmitter {
     }];
     for (const operation of this.#availableOperations(projectPath)) {
       if (operation.definition.agentVisibility !== "automatic") continue;
-      if (operation.definition.id.startsWith("osnova.session.") && memoryMode !== "full") continue;
+      if (operation.definition.id.startsWith("queryn.session.") && memoryMode !== "full") continue;
       schemas.push({
         name: operation.definition.id,
         description: operation.definition.description ?? operation.definition.title,
@@ -496,7 +496,7 @@ export class AgentKernel extends EventEmitter {
     const enabled = new Set((project.manifest.extensions ?? []).filter((extension) => extension.enabled !== false).map((extension) => extension.id));
     // Operator-connected MCP servers participate without per-project manifest grants.
     return this.registry.list({ extensionVersions: this.operations.projects.extensionVersions(projectPath) }).filter((operation) =>
-      operation.extensionId === "osnova.builtin" || operation.extensionId.startsWith("osnova.mcp.") || enabled.has(operation.extensionId)
+      operation.extensionId === "queryn.builtin" || operation.extensionId.startsWith("queryn.mcp.") || enabled.has(operation.extensionId)
     );
   }
 
@@ -615,28 +615,28 @@ function describeToolCall(definition: { id: string; title: string; risk: string 
   const query = typeof args.query === "string" ? args.query : undefined;
   const notePath = typeof args.path === "string" ? args.path : undefined;
   switch (definition.id) {
-    case "osnova.project.search": return { title: query ? `Ищу в проекте: ${query}` : "Ищу в проекте" };
-    case "osnova.project.read": return { title: notePath ? `Изучаю содержимое: ${notePath}` : "Изучаю содержимое проекта" };
-    case "osnova.project.list": return { title: "Просматриваю каталог проекта" };
-    case "osnova.artifact.resolve": return { title: typeof args.artifactId === "string" ? `Открываю артефакт: ${String(args.artifactId).slice(0, 24)}…` : "Открываю артефакт" };
-    case "osnova.notes.create": return { title: typeof args.title === "string" ? `Создаю заметку: ${args.title}` : "Создаю заметку" };
-    case "osnova.files.import": return { title: "Импортирую файл в проект" };
-    case "osnova.graph.link": return { title: "Связываю материалы проекта" };
-    case "osnova.context.reindex": return { title: "Пересобираю индекс проекта" };
+    case "queryn.project.search": return { title: query ? `Ищу в проекте: ${query}` : "Ищу в проекте" };
+    case "queryn.project.read": return { title: notePath ? `Изучаю содержимое: ${notePath}` : "Изучаю содержимое проекта" };
+    case "queryn.project.list": return { title: "Просматриваю каталог проекта" };
+    case "queryn.artifact.resolve": return { title: typeof args.artifactId === "string" ? `Открываю артефакт: ${String(args.artifactId).slice(0, 24)}…` : "Открываю артефакт" };
+    case "queryn.notes.create": return { title: typeof args.title === "string" ? `Создаю заметку: ${args.title}` : "Создаю заметку" };
+    case "queryn.files.import": return { title: "Импортирую файл в проект" };
+    case "queryn.graph.link": return { title: "Связываю материалы проекта" };
+    case "queryn.context.reindex": return { title: "Пересобираю индекс проекта" };
     default: return { title: definition.title || definition.id };
   }
 }
 
 function activityTitleForObservation(operationId: string): string {
   const map: Record<string, string> = {
-    "osnova.project.search": "Поиск выполнен",
-    "osnova.project.read": "Материал прочитан",
-    "osnova.project.list": "Каталог просмотрен",
-    "osnova.artifact.resolve": "Артефакт прочитан",
-    "osnova.notes.create": "Заметка создана",
-    "osnova.files.import": "Файл импортирован",
-    "osnova.graph.link": "Связь создана",
-    "osnova.context.reindex": "Индекс пересобран"
+    "queryn.project.search": "Поиск выполнен",
+    "queryn.project.read": "Материал прочитан",
+    "queryn.project.list": "Каталог просмотрен",
+    "queryn.artifact.resolve": "Артефакт прочитан",
+    "queryn.notes.create": "Заметка создана",
+    "queryn.files.import": "Файл импортирован",
+    "queryn.graph.link": "Связь создана",
+    "queryn.context.reindex": "Индекс пересобран"
   };
   return map[operationId] ?? operationId;
 }

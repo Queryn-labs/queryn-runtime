@@ -14,7 +14,7 @@ export class DiagnosticsService {
     try { await mkdir(this.dataRoot, { recursive: true }); await access(this.dataRoot); checks.push({ id: "runtime.data", status: "ok", message: "Runtime data directory is writable." }); }
     catch (error) { checks.push({ id: "runtime.data", status: "error", message: error instanceof Error ? error.message : String(error) }); }
     checks.push({ id: "platform", status: ["darwin", "win32"].includes(process.platform) ? "ok" : "warning", message: `${process.platform}/${process.arch}, Node ${process.version}` });
-    const docker = await commandAvailable(process.env.OSNOVA_OCI_COMMAND ?? "docker", ["version", "--format", "{{.Server.Version}}"]);
+    const docker = await commandAvailable(process.env.QUERYN_OCI_COMMAND ?? "docker", ["version", "--format", "{{.Server.Version}}"]);
     checks.push({ id: "runtime.oci", status: docker ? "ok" : "warning", message: docker ? `OCI runtime available (${docker}).` : "OCI runtime is unavailable; native and builtin tools still work." });
     const installedExtensions = await this.extensions.list();
     const integrityIssues = this.extensions.integrityIssues();

@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import net from "node:net";
-import type { ArtifactDescriptor, JobDescriptor, RuntimeState } from "@osnova/types";
+import type { ArtifactDescriptor, JobDescriptor, RuntimeState } from "@queryn/types";
 import type { AgentActivity, AgentOutputDelta } from "./agent-orchestrator.js";
 import type { AgentKernelActivity } from "./agent-kernel.js";
 

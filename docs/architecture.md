@@ -1,6 +1,6 @@
-# Архитектура osnova-runtime
+# Архитектура queryn-runtime
 
-`osnova-runtime` — обязательный локальный backend Osnova Reborn. Desktop main
+`queryn-runtime` — обязательный локальный backend Queryn. Desktop main
 process использует версионированный JSON-RPC 2.0 поверх Unix socket или named
 pipe. Headless CLI в основном вызывает те же runtime-сервисы напрямую, а
 команда `serve` отдельно поднимает JSON-RPC boundary.
@@ -46,7 +46,7 @@ usage, количество выходных токенов оцениваетс
 Отсутствие Docker, модели или расширения отражается диагностикой и состоянием capability. Оно не мешает открыть проект, читать Markdown, импортировать файлы и выполнять доступные builtin-операции.
 
 Если встроенный Node не предоставляет SQLite FTS5, Context Indexer атомарно
-создаёт удаляемый portable-индекс в `.osnova/index/context.json`. Это более
+создаёт удаляемый portable-индекс в `.queryn/index/context.json`. Это более
 простой поиск, но проект и контекст не перестают работать.
 
 ## Жизненный цикл инструментов
@@ -64,9 +64,9 @@ Supervisor контролирует заявленный writable disk budget в
 
 ## Версии расширений и локальное доверие
 
-Установленные версии расширения хранятся side-by-side. `osnova.json` задаёт
+Установленные версии расширения хранятся side-by-side. `queryn.json` задаёт
 переносимое требование (точная версия, `^`, `~`, `*` или `latest`), а
-`.osnova/extensions/lock.json` фиксирует выбранную на этом компьютере версию и
+`.queryn/extensions/lock.json` фиксирует выбранную на этом компьютере версию и
 integrity пакета. Registry выбирает Operation, Runtime, Context Provider,
 Connector и Model Provider по lock конкретного проекта: обновление одного
 проекта не переключает реализацию в другом.
@@ -83,8 +83,8 @@ Lock является удаляемым производным состояни
 tools продолжают работать.
 
 MCP adapter отображает Tools в Operations, `resources/read` в Context Envelope,
-а экспериментальный MCP task — во внутреннее ожидание Osnova Job. Отмена и
-таймаут принадлежат Job Manager Osnova; MCP task не становится источником истины.
+а экспериментальный MCP task — во внутреннее ожидание Queryn Job. Отмена и
+таймаут принадлежат Job Manager Queryn; MCP task не становится источником истины.
 Регистрация MCP-сервера доступна через API runtime и тестовые сценарии, но
 методы `mcp.server.*` пока не входят в dispatch публичного RPC. Desktop bridge
 не должен считать эти методы рабочим end-to-end пользовательским путём до

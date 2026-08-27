@@ -1,6 +1,6 @@
 packages:
   - .
-  - ../osnova-core/packages/*
-  - ../osnova-plugin-sdk
+  - ../queryn-core/packages/*
+  - ../queryn-sdk
 
 linkWorkspacePackages: true

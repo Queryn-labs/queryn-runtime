@@ -5,7 +5,7 @@ import { lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs
 import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { OperationDefinition, RuntimeDescriptor, RuntimeState } from "@osnova/types";
+import type { OperationDefinition, RuntimeDescriptor, RuntimeState } from "@queryn/types";
 import { httpJsonRpc, StdioToolClient } from "./tool-client.js";
 import type { BuiltinOperationHandler } from "./operation-registry.js";
 import { assertSafeRelativePath } from "./atomic.js";
@@ -54,7 +54,7 @@ interface ManagedProcess {
 }
 
 // Process-backed runtimes are isolated by lifecycle state, scoped paths, and explicit protocol calls.
-// see osnova-docs/docs/adr/adr-0008-runtime-supervisor.md
+// see queryn-docs/docs/adr/adr-0008-runtime-supervisor.md
 export class RuntimeSupervisor extends EventEmitter {
   readonly #states = new Map<string, RuntimeState>();
   readonly #processes = new Map<string, ManagedProcess>();
@@ -135,7 +135,7 @@ export class RuntimeSupervisor extends EventEmitter {
     const stopDiskMonitor = monitorDirectoryBudget(diskRoot, diskLimitBytes, budgetController);
     try {
       const paths = runtime.kind === "oci"
-        ? { input: "/osnova/input", work: "/osnova/work", outbox: "/osnova/outbox", models: "/osnova/models" }
+        ? { input: "/queryn/input", work: "/queryn/work", outbox: "/queryn/outbox", models: "/queryn/models" }
         : options.paths;
       const result = await session.client.request<T>(method, { ...params, paths }, { signal: callSignal, timeoutMs: options.timeoutMs ?? 30_000 });
       await assertDirectoryBudget(diskRoot, diskLimitBytes);
@@ -179,7 +179,7 @@ export class RuntimeSupervisor extends EventEmitter {
           const task = await httpJsonRpc<{ taskId?: string; status?: string; error?: string; result?: RuntimeInvocationResult }>(runtime.endpoint, "tasks/get", { taskId }, { signal: timeout.signal });
           status = task.status;
           if (["failed", "cancelled"].includes(status ?? "")) throw new Error(task.error ?? `MCP task ${status}.`);
-          if (status === "input_required") throw new Error("MCP task requires interactive input, which Osnova Tool Protocol v1 cannot supply.");
+          if (status === "input_required") throw new Error("MCP task requires interactive input, which Queryn Tool Protocol v1 cannot supply.");
           if (status === "completed") return normalizeMcpResult(task.result ?? {});
         }
       } else {
@@ -280,7 +280,7 @@ export class RuntimeSupervisor extends EventEmitter {
     this.#setState(runtime.id, "starting");
     try {
       await client.request("initialize", {
-        protocolVersion: "1", client: { name: "osnova-runtime", version: "0.2.0" },
+        protocolVersion: "1", client: { name: "queryn-runtime", version: "0.2.0" },
         capabilities: { jobs: true, cancellation: true, context: true, connectors: true }
       }, { timeoutMs: 10_000 });
       this.#processes.set(key, session);
@@ -351,16 +351,16 @@ export class RuntimeSupervisor extends EventEmitter {
     if (runtime.kind === "oci") {
       if (!runtime.image || !/@sha256:[a-f0-9]{64}$/.test(runtime.image)) throw new Error("OCI image must be pinned by a full SHA-256 digest.");
       const args = ["run", "--rm", "-i", "--network", runtime.resources?.network ? "bridge" : "none", "--read-only", "--user", "65532:65532",
-        "--mount", `type=bind,src=${invocation.inputPath},dst=/osnova/input,readonly`,
-        "--mount", `type=bind,src=${invocation.outboxPath},dst=/osnova/outbox`,
-        "--mount", `type=bind,src=${invocation.modelsPath},dst=/osnova/models,readonly`,
+        "--mount", `type=bind,src=${invocation.inputPath},dst=/queryn/input,readonly`,
+        "--mount", `type=bind,src=${invocation.outboxPath},dst=/queryn/outbox`,
+        "--mount", `type=bind,src=${invocation.modelsPath},dst=/queryn/models,readonly`,
         "--pids-limit", "256", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
         "--memory", `${runtime.resources?.memoryMb ?? 1024}m`, "--cpus", String(runtime.resources?.cpu ?? 1),
-        "--tmpfs", `/osnova/work:rw,nosuid,size=${runtime.resources?.diskMb ?? 512}m`,
+        "--tmpfs", `/queryn/work:rw,nosuid,size=${runtime.resources?.diskMb ?? 512}m`,
         "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m"];
       if (runtime.resources?.gpu) args.push("--gpus", "all");
       args.push(runtime.image);
-      return { command: process.env.OSNOVA_OCI_COMMAND ?? "docker", args };
+      return { command: process.env.QUERYN_OCI_COMMAND ?? "docker", args };
     }
     throw new Error(`Unsupported runtime kind: ${runtime.kind}`);
   }
@@ -388,7 +388,7 @@ export async function createInvocationDirectories(runtimeRoot: string, jobId: st
 export async function removeInvocationDirectories(root: string): Promise<void> { await rm(root, { recursive: true, force: true }); }
 
 export function runtimeInvocationScopeRoot(dataRoot: string, runtime: RuntimeDescriptor | undefined, projectPath: string): string {
-  const runtimeId = (runtime?.id ?? "osnova.builtin").replace(/[^a-zA-Z0-9._-]/g, "-");
+  const runtimeId = (runtime?.id ?? "queryn.builtin").replace(/[^a-zA-Z0-9._-]/g, "-");
   const lifecycle = runtime?.lifecycle ?? "job";
   const projectHash = createHash("sha256").update(projectPath).digest("hex").slice(0, 20);
   const scope = lifecycle === "shared" ? "shared" : lifecycle === "project" ? `project-${projectHash}` : "jobs";
@@ -400,7 +400,7 @@ function toolJobParams(invocation: RuntimeInvocation, inContainer: boolean): Rec
     jobId: invocation.jobId, operationId: invocation.operation.id, input: invocation.arguments,
     sessionId: invocation.sessionId,
     paths: inContainer
-      ? { input: "/osnova/input", work: "/osnova/work", outbox: "/osnova/outbox", models: "/osnova/models" }
+      ? { input: "/queryn/input", work: "/queryn/work", outbox: "/queryn/outbox", models: "/queryn/models" }
       : { input: invocation.inputPath, work: invocation.workPath, outbox: invocation.outboxPath, models: invocation.modelsPath }
   };
 }

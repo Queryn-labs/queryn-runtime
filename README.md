@@ -1,7 +1,7 @@
-# osnova-runtime
+# queryn-runtime
 
-Локальный control plane Osnova Reborn. Он управляет проектами, расширениями, операциями, заданиями, контекстом, моделями и диалоговым агентом с инструментами. AI и OCI являются опциональными возможностями: проект открывается и остаётся полезным без них.
-Каноническая [страница документации](https://github.com/Queryn-labs/osnova-docs) описывает архитектурную роль runtime и его контракты.
+Локальный control plane Queryn. Он управляет проектами, расширениями, операциями, заданиями, контекстом, моделями и диалоговым агентом с инструментами. AI и OCI являются опциональными возможностями: проект открывается и остаётся полезным без них.
+Каноническая [страница документации](https://github.com/Queryn-labs/queryn-docs) описывает архитектурную роль runtime и его контракты.
 
 ## Статус
 
@@ -27,8 +27,8 @@ node dist/cli.js help
 ```
 
 В отдельном клоне `npm run pretest` ожидает соседний репозиторий
-`../osnova-spec` со скриптами проверки контрактов и гигиены комментариев. Для
-локального запуска клонируйте `osnova-spec` рядом с runtime или используйте
+`../queryn-spec` со скриптами проверки контрактов и гигиены комментариев. Для
+локального запуска клонируйте `queryn-spec` рядом с runtime или используйте
 layout из CI.
 
 ## Границы
@@ -36,7 +36,7 @@ layout из CI.
 - Runtime не владеет пользовательскими данными: долговечное состояние хранится в открытой папке проекта.
 - Extension-инструменты не получают прямой доступ на запись к проекту. Результаты
   проходят через outbox и `ArtifactIngestor`. Привилегированные built-ins пишут
-  только через атомарные API `osnova-core` и возвращают artifact ids в тот же job.
+  только через атомарные API `queryn-core` и возвращают artifact ids в тот же job.
 - Агент вызывает только зарегистрированные операции и не получает shell/filesystem API.
 - Локальный RPC использует случайный адрес и bearer-токен экземпляра.
 
@@ -51,22 +51,22 @@ approval и непубликованные outbox candidates сохраняют�
 Версии расширений устанавливаются side-by-side, а каждый открытый проект
 получает собственный derived lock. Выданные расширению permissions и сохранённые
 risk-policy rules находятся в локальном состоянии runtime, не в переносимой
-папке проекта. Подложенный `.osnova/extensions/grants.json` не является
+папке проекта. Подложенный `.queryn/extensions/grants.json` не является
 источником доверия.
 
-`Reborn backend` CI прогоняет core, SDK, runtime/CLI, reference extensions и
+`Queryn backend` CI прогоняет core, SDK, runtime/CLI, reference extensions и
 desktop bridge на `macos-14` и `windows-2022`. Если репозитории организации
 закрыты, для cross-repository checkout нужен read-only secret
-`OSNOVA_REPO_TOKEN`. Для публичных репозиториев достаточно `github.token`.
+`QUERYN_REPO_TOKEN`. Для публичных репозиториев достаточно `github.token`.
 
 ## Связанные репозитории
 
-- `osnova-spec` определяет формат проекта, RPC и Extension Manifest v1.
-- `osnova-core` предоставляет project IO, manifest и validation APIs.
-- `osnova-plugin-sdk` задаёт публичный контракт авторов расширений.
-- `osnova-desktop` подключает runtime через main process и preload bridge.
-- `osnova-plugins` содержит reference-расширения для runtime.
-- `osnova-docs` содержит нормативную документацию архитектуры и политики
+- `queryn-spec` определяет формат проекта, RPC и Extension Manifest v1.
+- `queryn-core` предоставляет project IO, manifest и validation APIs.
+- `queryn-sdk` задаёт публичный контракт авторов расширений.
+- `queryn-desktop` подключает runtime через main process и preload bridge.
+- `queryn-extensions` содержит reference-расширения для runtime.
+- `queryn-docs` содержит нормативную документацию архитектуры и политики
   доверия.
 
 ## Лицензия

@@ -3,11 +3,11 @@ import { createReadStream } from "node:fs";
 import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type { PackedExtension } from "@osnova/plugin-sdk/package";
-import type { ExtensionManifest as PublicExtensionManifest, RuntimeContribution } from "@osnova/plugin-sdk";
-import { validateExtensionManifest } from "@osnova/plugin-sdk";
-import type { ExtensionRequirement, OperationDefinition, OperationResources, OperationRisk, Permission, RuntimeDescriptor } from "@osnova/types";
-import { readManifest, serializeManifest } from "@osnova/manifest";
+import type { PackedExtension } from "@queryn/plugin-sdk/package";
+import type { ExtensionManifest as PublicExtensionManifest, RuntimeContribution } from "@queryn/plugin-sdk";
+import { validateExtensionManifest } from "@queryn/plugin-sdk";
+import type { ExtensionRequirement, OperationDefinition, OperationResources, OperationRisk, Permission, RuntimeDescriptor } from "@queryn/types";
+import { readManifest, serializeManifest } from "@queryn/manifest";
 import { assertSafeRelativePath, resolveSafeExistingFile, writeJsonAtomic, writeTextAtomic } from "./atomic.js";
 import type { OperationRegistry, RegisteredOperation } from "./operation-registry.js";
 import type { PolicyEngine } from "./policy-engine.js";
@@ -71,11 +71,11 @@ export class ExtensionManager {
     const raw = await readFile(packagePath);
     if (raw.byteLength > (options.maxPackageBytes ?? 64 * 1024 * 1024)) throw new Error("Extension package is too large.");
     const packed = JSON.parse(raw.toString("utf8")) as PackedExtension;
-    if (packed.format !== "osnova-extension-package/1") throw new Error("Unsupported extension package format.");
+    if (packed.format !== "queryn-extension-package/1") throw new Error("Unsupported extension package format.");
     const validation = validateExtensionManifest(packed.manifest);
     if (!validation.valid) throw new Error(validation.issues.join("\n"));
-    if (!isCompatibleHostVersion(hostVersion, packed.manifest.osnova.minVersion)) {
-      throw new Error(`Extension requires Osnova ${packed.manifest.osnova.minVersion} or newer; host is ${hostVersion}.`);
+    if (!isCompatibleHostVersion(hostVersion, packed.manifest.queryn.minVersion)) {
+      throw new Error(`Extension requires Queryn ${packed.manifest.queryn.minVersion} or newer; host is ${hostVersion}.`);
     }
     verifyPackageIntegrity(packed);
     verifyPackageSignature(packed, options);
@@ -92,7 +92,7 @@ export class ExtensionManager {
       if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     }
     // Unique staging names isolate concurrent installers before rename publishes a complete version tree.
-    // see osnova-docs/docs/adr/adr-0004-plugin-system.md
+    // see queryn-docs/docs/adr/adr-0004-plugin-system.md
     const staging = `${versionRoot}.staging-${process.pid}-${Date.now()}`;
     await rm(staging, { recursive: true, force: true });
     await mkdir(staging, { recursive: true });
@@ -180,8 +180,8 @@ export class ExtensionManager {
     if (undeclared.length) throw new Error(`Cannot grant undeclared permissions: ${undeclared.join(", ")}`);
     const manifest = await readManifest(projectPath);
     const extensions = upsertRequirement(manifest.extensions ?? [], { id: extensionId, version: requirementVersion, enabled: true });
-    await writeTextAtomic(path.join(projectPath, "osnova.json"), serializeManifest({ ...manifest, extensions, updatedAt: new Date().toISOString() }));
-    const lockPath = path.join(projectPath, ".osnova", "extensions", "lock.json");
+    await writeTextAtomic(path.join(projectPath, "queryn.json"), serializeManifest({ ...manifest, extensions, updatedAt: new Date().toISOString() }));
+    const lockPath = path.join(projectPath, ".queryn", "extensions", "lock.json");
     const lock = await readJsonOr<ExtensionLock>(lockPath, { schemaVersion: "1", extensions: {} });
     const install = await readJsonOr<{ integrity?: string }>(path.join(this.#versionRoot(extensionId, version), ".install.json"), {});
     lock.extensions[extensionId] = { version, integrity: install.integrity };
@@ -194,8 +194,8 @@ export class ExtensionManager {
   async disconnect(projectPath: string, extensionId: string): Promise<void> {
     const manifest = await readManifest(projectPath);
     const extensions = (manifest.extensions ?? []).map((requirement) => requirement.id === extensionId ? { ...requirement, enabled: false } : requirement);
-    await writeTextAtomic(path.join(projectPath, "osnova.json"), serializeManifest({ ...manifest, extensions, updatedAt: new Date().toISOString() }));
-    const lockPath = path.join(projectPath, ".osnova", "extensions", "lock.json");
+    await writeTextAtomic(path.join(projectPath, "queryn.json"), serializeManifest({ ...manifest, extensions, updatedAt: new Date().toISOString() }));
+    const lockPath = path.join(projectPath, ".queryn", "extensions", "lock.json");
     const lock = await readJsonOr<ExtensionLock>(lockPath, { schemaVersion: "1", extensions: {} });
     delete lock.extensions[extensionId];
     await writeJsonAtomic(lockPath, lock);
@@ -207,7 +207,7 @@ export class ExtensionManager {
   async reconcileProject(projectPath: string): Promise<{ resolved: Record<string, string>; missing: ExtensionRequirement[] }> {
     const manifest = await readManifest(projectPath);
     const installed = await this.list();
-    const lockPath = path.join(projectPath, ".osnova", "extensions", "lock.json");
+    const lockPath = path.join(projectPath, ".queryn", "extensions", "lock.json");
     const lock = await readJsonOr<ExtensionLock>(lockPath, { schemaVersion: "1", extensions: {} });
     const missing: ExtensionRequirement[] = [];
     for (const requirement of manifest.extensions ?? []) {

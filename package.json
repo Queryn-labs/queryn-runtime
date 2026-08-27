@@ -1,12 +1,12 @@
 {
-  "name": "osnova-runtime",
+  "name": "queryn-runtime",
   "version": "0.2.0",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
   "packageManager": "pnpm@10.5.2",
   "bin": {
-    "osnova-runtime": "./dist/cli.js"
+    "queryn-runtime": "./dist/cli.js"
   },
   "files": ["dist", "docs", "README.md", "LICENSE"],
   "exports": {
@@ -27,17 +27,17 @@
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "start": "node dist/cli.js serve",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "pretest": "node ../osnova-spec/scripts/generate-contracts.mjs --check && node ../osnova-spec/scripts/check-comment-hygiene.mjs --check --repo osnova-runtime",
+    "pretest": "node ../queryn-spec/scripts/generate-contracts.mjs --check && node ../queryn-spec/scripts/check-comment-hygiene.mjs --check --repo queryn-runtime",
     "test": "npm run build && node -e \"require('node:fs').rmSync('dist-test',{recursive:true,force:true})\" && tsc -p tsconfig.test.json && node --test dist-test/**/*.test.js",
     "doctor": "node dist/cli.js doctor",
     "selftest": "node dist/cli.js selftest"
   },
   "dependencies": {
-    "@osnova/manifest": "file:../osnova-core/packages/manifest",
-    "@osnova/plugin-sdk": "file:../osnova-plugin-sdk",
-    "@osnova/project": "file:../osnova-core/packages/project",
-    "@osnova/types": "file:../osnova-core/packages/types",
-    "@osnova/validation": "file:../osnova-core/packages/validation"
+    "@queryn/manifest": "file:../queryn-core/packages/manifest",
+    "@queryn/plugin-sdk": "file:../queryn-sdk",
+    "@queryn/project": "file:../queryn-core/packages/project",
+    "@queryn/types": "file:../queryn-core/packages/types",
+    "@queryn/validation": "file:../queryn-core/packages/validation"
   },
   "devDependencies": {
     "@types/node": "^22.10.7",

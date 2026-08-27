@@ -1,7 +1,7 @@
 import { mkdir, open, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { listArtifacts, listAssets, listNotes, readArtifact, readNote } from "@osnova/project";
-import type { ApprovalDecision, ArtifactDescriptor, ContextEnvelope, ContextLevel } from "@osnova/types";
+import { listArtifacts, listAssets, listNotes, readArtifact, readNote } from "@queryn/project";
+import type { ApprovalDecision, ArtifactDescriptor, ContextEnvelope, ContextLevel } from "@queryn/types";
 import { writeJsonAtomic } from "./atomic.js";
 import { resolveSafeExistingFile } from "./atomic.js";
 
@@ -15,7 +15,7 @@ const MAX_RESEARCH_NOTES = 12;
 const MAX_RESEARCH_ASSETS = 8;
 
 // These catalog caps match the compact-envelope budget in the context policy.
-// see osnova-docs/docs/adr/adr-0009-context-policy.md
+// see queryn-docs/docs/adr/adr-0009-context-policy.md
 
 export interface ContextRequest {
   projectPath: string;
@@ -339,7 +339,7 @@ export class ProjectIndexer {
   async ensureFresh(projectPath: string): Promise<"fresh" | "rebuilt"> {
     let indexMtime = 0;
     for (const candidate of ["context.sqlite", "context.json"]) {
-      try { indexMtime = Math.max(indexMtime, (await stat(path.join(projectPath, ".osnova", "index", candidate))).mtimeMs); }
+      try { indexMtime = Math.max(indexMtime, (await stat(path.join(projectPath, ".queryn", "index", candidate))).mtimeMs); }
       catch { /* A missing index means it must be built. */ }
     }
     const cutoff = indexMtime + 5;
@@ -357,8 +357,8 @@ export class ProjectIndexer {
 
   async rebuild(projectPath: string): Promise<{ indexed: number; engine: "sqlite-fts5" | "portable" }> {
     const documents = await collectIndexDocuments(projectPath);
-    const indexPath = path.join(projectPath, ".osnova", "index", "context.sqlite");
-    const portablePath = path.join(projectPath, ".osnova", "index", "context.json");
+    const indexPath = path.join(projectPath, ".queryn", "index", "context.sqlite");
+    const portablePath = path.join(projectPath, ".queryn", "index", "context.json");
     if (this.#preferSqlite) {
       try {
         const { DatabaseSync } = await import("node:sqlite");
@@ -384,7 +384,7 @@ export class ProjectIndexer {
     await this.ensureFresh(projectPath).catch(() => undefined);
     if (this.#preferSqlite) {
       try {
-        const indexPath = path.join(projectPath, ".osnova", "index", "context.sqlite");
+        const indexPath = path.join(projectPath, ".queryn", "index", "context.sqlite");
         await stat(indexPath);
         const { DatabaseSync } = await import("node:sqlite");
         const db = new DatabaseSync(indexPath, { readOnly: true });
@@ -397,7 +397,7 @@ export class ProjectIndexer {
       }
     }
     try {
-      const portablePath = path.join(projectPath, ".osnova", "index", "context.json");
+      const portablePath = path.join(projectPath, ".queryn", "index", "context.json");
       const parsed = JSON.parse(await readFile(portablePath, "utf8")) as { version?: unknown; documents?: unknown };
       if (parsed.version !== 1 || !Array.isArray(parsed.documents)) throw new Error("Portable project index is invalid; rebuild it.");
       return searchPortableIndex(parsed.documents as IndexDocument[], query, limit);

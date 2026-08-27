@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import type { JobDescriptor, JobStatus } from "@osnova/types";
+import type { JobDescriptor, JobStatus } from "@queryn/types";
 import { writeJsonAtomic } from "./atomic.js";
 
 export interface CreateJobInput {

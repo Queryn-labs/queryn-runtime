@@ -3,9 +3,9 @@ import { chmod, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { appendSessionEvent, createSession, forkSession, listArtifacts, listSessions, readArtifact, readSessionEvents, registerExistingArtifact, updateSession } from "@osnova/project";
-import type { ApprovalDecision } from "@osnova/types";
-import type { OsnovaRuntime } from "./runtime.js";
+import { appendSessionEvent, createSession, forkSession, listArtifacts, listSessions, readArtifact, readSessionEvents, registerExistingArtifact, updateSession } from "@queryn/project";
+import type { ApprovalDecision } from "@queryn/types";
+import type { QuerynRuntime } from "./runtime.js";
 import { writeJsonAtomic } from "./atomic.js";
 
 export interface RpcServerHandle {
@@ -16,7 +16,7 @@ export interface RpcServerHandle {
 
 interface RpcRequest { jsonrpc: "2.0"; id?: string | number; method: string; params?: Record<string, unknown> }
 
-export async function startRpcServer(runtime: OsnovaRuntime, options: { address?: string; token?: string } = {}): Promise<RpcServerHandle> {
+export async function startRpcServer(runtime: QuerynRuntime, options: { address?: string; token?: string } = {}): Promise<RpcServerHandle> {
   const token = options.token ?? randomBytes(32).toString("base64url");
   const address = options.address ?? createRpcAddress();
   const authenticated = new Set<net.Socket>();
@@ -53,7 +53,7 @@ export async function startRpcServer(runtime: OsnovaRuntime, options: { address?
     server.listen(address, () => resolve());
   });
   if (process.platform !== "win32") await chmod(address, 0o600);
-  await writeJsonAtomic(path.join(runtime.dataRoot, "rpc.json"), { address, token, pid: process.pid, startedAt: new Date().toISOString(), protocol: "osnova-rpc/1" });
+  await writeJsonAtomic(path.join(runtime.dataRoot, "rpc.json"), { address, token, pid: process.pid, startedAt: new Date().toISOString(), protocol: "queryn-rpc/1" });
   return {
     address, token,
     async close() {
@@ -70,7 +70,7 @@ export async function startRpcServer(runtime: OsnovaRuntime, options: { address?
   };
 }
 
-async function receive(runtime: OsnovaRuntime, socket: net.Socket, line: string, token: string, authenticated: Set<net.Socket>): Promise<void> {
+async function receive(runtime: QuerynRuntime, socket: net.Socket, line: string, token: string, authenticated: Set<net.Socket>): Promise<void> {
   let request: RpcRequest;
   try { request = JSON.parse(line) as RpcRequest; }
   catch { return send(socket, { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }); }
@@ -89,7 +89,7 @@ async function receive(runtime: OsnovaRuntime, socket: net.Socket, line: string,
   }
 }
 
-async function dispatch(runtime: OsnovaRuntime, method: string, params: Record<string, unknown>): Promise<unknown> {
+async function dispatch(runtime: QuerynRuntime, method: string, params: Record<string, unknown>): Promise<unknown> {
   const projectPath = () => requiredString(params, "projectPath");
   switch (method) {
     case "runtime.status": return runtime.status();
@@ -172,7 +172,7 @@ async function dispatch(runtime: OsnovaRuntime, method: string, params: Record<s
 
 function send(socket: net.Socket, message: unknown): void { if (!socket.destroyed) socket.write(`${JSON.stringify(message)}\n`); }
 function broadcast(sockets: Set<net.Socket>, message: unknown): void { for (const socket of sockets) send(socket, message); }
-function createRpcAddress(): string { return process.platform === "win32" ? `\\\\.\\pipe\\osnova-${randomBytes(16).toString("hex")}` : path.join(os.tmpdir(), `osnova-${process.getuid?.() ?? "user"}-${randomBytes(12).toString("hex")}.sock`); }
+function createRpcAddress(): string { return process.platform === "win32" ? `\\\\.\\pipe\\queryn-${randomBytes(16).toString("hex")}` : path.join(os.tmpdir(), `queryn-${process.getuid?.() ?? "user"}-${randomBytes(12).toString("hex")}.sock`); }
 function requiredString(params: Record<string, unknown>, key: string): string { const value = params[key]; if (typeof value !== "string" || !value) throw new Error(`${key} is required.`); return value; }
 function optionalString(value: unknown): string | undefined { return typeof value === "string" ? value : undefined; }
 function optionalNumber(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) ? value : undefined; }

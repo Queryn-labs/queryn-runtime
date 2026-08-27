@@ -1,5 +1,5 @@
 /**
- * Type-only public entry point for osnova-runtime.
+ * Type-only public entry point for queryn-runtime.
  * Re-exports canonical runtime DTOs without adding runtime code to the bundle.
  */
 export type {

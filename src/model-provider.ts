@@ -1,4 +1,4 @@
-import type { OperationRisk, Permission } from "@osnova/types";
+import type { OperationRisk, Permission } from "@queryn/types";
 import type { CredentialStore } from "./credential-store.js";
 import { readBoundedJsonResponse } from "./tool-client.js";
 
@@ -84,7 +84,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           tools: request.tools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description ?? "", parameters: tool.parameters ?? { type: "object", properties: {} } } })),
           tool_choice: "auto"
         } : {}),
-        ...(request.responseSchema ? { response_format: { type: "json_schema", json_schema: { name: "osnova_response", strict: true, schema: request.responseSchema } } } : {})
+        ...(request.responseSchema ? { response_format: { type: "json_schema", json_schema: { name: "queryn_response", strict: true, schema: request.responseSchema } } } : {})
       })
     });
     if (!response.ok) throw new Error(`Model provider returned HTTP ${response.status}.`);
@@ -173,7 +173,7 @@ export async function requestContextSelection(
     messages: [
       {
         role: "system",
-        content: "Inspect the compact Osnova project catalog and choose only the sources needed to answer the user's goal. Return JSON only. Use exact project-relative paths and artifact ids from the catalog. Add focused search queries when titles alone are insufficient."
+        content: "Inspect the compact Queryn project catalog and choose only the sources needed to answer the user's goal. Return JSON only. Use exact project-relative paths and artifact ids from the catalog. Add focused search queries when titles alone are insufficient."
       },
       { role: "user", content: `Goal:\n${goal}\n\nCompact project catalog:\n${snapshot}` }
     ],
@@ -198,7 +198,7 @@ export async function requestAgentReply(
     messages: [
       {
         role: "system",
-        content: "Answer the user clearly using the researched Osnova project sources. Mention uncertainty when the sources are insufficient. Do not emit JSON or an operation plan in this response."
+        content: "Answer the user clearly using the researched Queryn project sources. Mention uncertainty when the sources are insufficient. Do not emit JSON or an operation plan in this response."
       },
       { role: "user", content: `Goal:\n${goal}\n\nResearched project context:\n${researchedContext}` }
     ],
@@ -223,7 +223,7 @@ export async function requestAgentPlan(
     messages: [
       {
         role: "system",
-        content: "Build a bounded Osnova operation plan only when project changes are needed. Return JSON only. Use only listed operations. Never invent filesystem or shell actions. Return an empty steps array for a read-only answer."
+        content: "Build a bounded Queryn operation plan only when project changes are needed. Return JSON only. Use only listed operations. Never invent filesystem or shell actions. Return an empty steps array for a read-only answer."
       },
       { role: "user", content: `Goal:\n${goal}\n\nAvailable operations and researched project context:\n${snapshot}` }
     ],

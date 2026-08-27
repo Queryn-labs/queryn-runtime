@@ -1,5 +1,5 @@
-import { listSessions, readSessionEvents } from "@osnova/project";
-import type { SessionEvent } from "@osnova/types";
+import { listSessions, readSessionEvents } from "@queryn/project";
+import type { SessionEvent } from "@queryn/types";
 
 export interface SessionMemoryMatch {
   sessionId: string;
@@ -17,7 +17,7 @@ function eventText(event: SessionEvent): string | undefined {
 }
 
 // Session memory is read-only over project logs and returns bounded snippets as references.
-// see osnova-docs/docs/adr/adr-0011-cross-session-memory.md
+// see queryn-docs/docs/adr/adr-0011-cross-session-memory.md
 export async function searchSessions(projectPath: string, query: string, limit = 8): Promise<SessionMemoryMatch[]> {
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (terms.length === 0) return [];

@@ -8,21 +8,21 @@ importers:
 
   .:
     dependencies:
-      '@osnova/manifest':
-        specifier: file:../osnova-core/packages/manifest
-        version: file:../osnova-core/packages/manifest
-      '@osnova/plugin-sdk':
-        specifier: file:../osnova-plugin-sdk
-        version: link:../osnova-plugin-sdk
-      '@osnova/project':
-        specifier: file:../osnova-core/packages/project
-        version: file:../osnova-core/packages/project
-      '@osnova/types':
-        specifier: file:../osnova-core/packages/types
-        version: link:../osnova-core/packages/types
-      '@osnova/validation':
-        specifier: file:../osnova-core/packages/validation
-        version: file:../osnova-core/packages/validation
+      '@queryn/manifest':
+        specifier: file:../queryn-core/packages/manifest
+        version: file:../queryn-core/packages/manifest
+      '@queryn/plugin-sdk':
+        specifier: file:../queryn-sdk
+        version: link:../queryn-sdk
+      '@queryn/project':
+        specifier: file:../queryn-core/packages/project
+        version: file:../queryn-core/packages/project
+      '@queryn/types':
+        specifier: file:../queryn-core/packages/types
+        version: link:../queryn-core/packages/types
+      '@queryn/validation':
+        specifier: file:../queryn-core/packages/validation
+        version: file:../queryn-core/packages/validation
     devDependencies:
       '@types/node':
         specifier: ^22.10.7
@@ -31,33 +31,33 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
-  ../osnova-core/packages/manifest:
+  ../queryn-core/packages/manifest:
     dependencies:
-      '@osnova/types':
+      '@queryn/types':
         specifier: workspace:0.2.0
         version: link:../types
 
-  ../osnova-core/packages/project:
+  ../queryn-core/packages/project:
     dependencies:
-      '@osnova/manifest':
+      '@queryn/manifest':
         specifier: workspace:0.2.0
         version: link:../manifest
-      '@osnova/types':
+      '@queryn/types':
         specifier: workspace:0.2.0
         version: link:../types
-      '@osnova/validation':
+      '@queryn/validation':
         specifier: workspace:0.2.0
         version: link:../validation
 
-  ../osnova-core/packages/types: {}
+  ../queryn-core/packages/types: {}
 
-  ../osnova-core/packages/validation:
+  ../queryn-core/packages/validation:
     dependencies:
-      '@osnova/types':
+      '@queryn/types':
         specifier: workspace:0.2.0
         version: link:../types
 
-  ../osnova-plugin-sdk:
+  ../queryn-sdk:
     devDependencies:
       '@types/node':
         specifier: ^22.10.7
@@ -68,14 +68,14 @@ importers:
 
 packages:
 
-  '@osnova/manifest@file:../osnova-core/packages/manifest':
-    resolution: {directory: ../osnova-core/packages/manifest, type: directory}
+  '@queryn/manifest@file:../queryn-core/packages/manifest':
+    resolution: {directory: ../queryn-core/packages/manifest, type: directory}
 
-  '@osnova/project@file:../osnova-core/packages/project':
-    resolution: {directory: ../osnova-core/packages/project, type: directory}
+  '@queryn/project@file:../queryn-core/packages/project':
+    resolution: {directory: ../queryn-core/packages/project, type: directory}
 
-  '@osnova/validation@file:../osnova-core/packages/validation':
-    resolution: {directory: ../osnova-core/packages/validation, type: directory}
+  '@queryn/validation@file:../queryn-core/packages/validation':
+    resolution: {directory: ../queryn-core/packages/validation, type: directory}
 
   '@types/node@22.19.21':
     resolution: {integrity: sha512-VMeFBSCKQKmm2swI2kW51SFusDqekC6q9trBCvJ/JliDchFSuoYYKN7yVNjPthP1HKZcx3U1gI/wTcEBjEFKTA==}
@@ -90,19 +90,19 @@ packages:
 
 snapshots:
 
-  '@osnova/manifest@file:../osnova-core/packages/manifest':
+  '@queryn/manifest@file:../queryn-core/packages/manifest':
     dependencies:
-      '@osnova/types': link:../osnova-core/packages/types
+      '@queryn/types': link:../queryn-core/packages/types
 
-  '@osnova/project@file:../osnova-core/packages/project':
+  '@queryn/project@file:../queryn-core/packages/project':
     dependencies:
-      '@osnova/manifest': link:../osnova-core/packages/manifest
-      '@osnova/types': link:../osnova-core/packages/types
-      '@osnova/validation': link:../osnova-core/packages/validation
+      '@queryn/manifest': link:../queryn-core/packages/manifest
+      '@queryn/types': link:../queryn-core/packages/types
+      '@queryn/validation': link:../queryn-core/packages/validation
 
-  '@osnova/validation@file:../osnova-core/packages/validation':
+  '@queryn/validation@file:../queryn-core/packages/validation':
     dependencies:
-      '@osnova/types': link:../osnova-core/packages/types
+      '@queryn/types': link:../queryn-core/packages/types
 
   '@types/node@22.19.21':
     dependencies:

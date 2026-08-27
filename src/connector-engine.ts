@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ApprovalDecision, ArtifactDescriptor, OperationRisk, OsnovaProject, Permission } from "@osnova/types";
+import type { ApprovalDecision, ArtifactDescriptor, OperationRisk, QuerynProject, Permission } from "@queryn/types";
 import type { ArtifactCandidate, ArtifactIngestor } from "./artifact-ingestor.js";
 import { assertSafeRelativePath, writeJsonAtomic } from "./atomic.js";
 import type { PolicyEngine } from "./policy-engine.js";
 
 export interface ConnectorItem { cursor: string; candidate: ArtifactCandidate; outboxPath?: string }
 export interface ConnectorHandler {
-  pull(input: { project: OsnovaProject; checkpoint?: string; signal: AbortSignal }): AsyncIterable<ConnectorItem>;
+  pull(input: { project: QuerynProject; checkpoint?: string; signal: AbortSignal }): AsyncIterable<ConnectorItem>;
 }
 
 export interface ConnectorRegistration {
@@ -25,7 +25,7 @@ export interface ConnectorRegistration {
 export class ConnectorEngine {
   readonly #connectors = new Map<string, ConnectorRegistration>();
   constructor(readonly ingestor: ArtifactIngestor, readonly policy: PolicyEngine) {}
-  register(connectorId: string, handler: ConnectorHandler, options: Omit<ConnectorRegistration, "id" | "handler"> = { extensionId: "osnova.builtin", permissions: [], risk: "safe-read", scope: "project", produces: [] }): void {
+  register(connectorId: string, handler: ConnectorHandler, options: Omit<ConnectorRegistration, "id" | "handler"> = { extensionId: "queryn.builtin", permissions: [], risk: "safe-read", scope: "project", produces: [] }): void {
     this.#connectors.set(connectorId, { id: connectorId, handler, ...options });
   }
   list(): Array<Omit<ConnectorRegistration, "handler">> { return [...this.#connectors.values()].map(({ handler: _handler, ...connector }) => connector); }
@@ -36,10 +36,10 @@ export class ConnectorEngine {
     return definition;
   }
 
-  async sync(project: OsnovaProject, connectorId: string, options: { signal?: AbortSignal; producedTypes: string[]; approval?: ApprovalDecision }): Promise<ArtifactDescriptor[]> {
+  async sync(project: QuerynProject, connectorId: string, options: { signal?: AbortSignal; producedTypes: string[]; approval?: ApprovalDecision }): Promise<ArtifactDescriptor[]> {
     const registration = this.#connectors.get(connectorId);
     if (!registration) throw new Error(`Unknown connector: ${connectorId}`);
-    if (registration.extensionId !== "osnova.builtin") {
+    if (registration.extensionId !== "queryn.builtin") {
       const connected = project.manifest.extensions?.some((extension) => extension.id === registration.extensionId && extension.enabled !== false);
       if (!connected) throw new Error(`Connector extension is not connected to this project: ${registration.extensionId}`);
       const evaluation = this.policy.evaluate(project.rootPath, registration.extensionId, {
@@ -52,7 +52,7 @@ export class ConnectorEngine {
       if (options.approval) await this.policy.rememberApproval(project.rootPath, connectorId, options.approval);
     }
     const handler = registration.handler;
-    const checkpointPath = path.join(project.rootPath, ".osnova", "connectors", `${connectorId}.json`);
+    const checkpointPath = path.join(project.rootPath, ".queryn", "connectors", `${connectorId}.json`);
     let checkpoint: string | undefined;
     try { checkpoint = (JSON.parse(await (await import("node:fs/promises")).readFile(checkpointPath, "utf8")) as { cursor: string }).cursor; } catch {}
     const signal = options.signal ?? new AbortController().signal;
@@ -60,7 +60,7 @@ export class ConnectorEngine {
     for await (const item of handler.pull({ project, checkpoint, signal })) {
       if (signal.aborted) throw signal.reason;
       const ownedOutbox = !item.outboxPath;
-      const outbox = item.outboxPath ?? path.join(project.rootPath, ".osnova", "connector-outbox", `${connectorId}-${randomUUID()}`);
+      const outbox = item.outboxPath ?? path.join(project.rootPath, ".queryn", "connector-outbox", `${connectorId}-${randomUUID()}`);
       if (ownedOutbox) await mkdir(outbox, { recursive: true });
       try {
         const source = item.candidate.metadata?.inlineText;

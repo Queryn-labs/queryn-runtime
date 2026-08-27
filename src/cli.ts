@@ -2,8 +2,8 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createSession, listArtifacts } from "@osnova/project";
-import { OsnovaRuntime } from "./runtime.js";
+import { createSession, listArtifacts } from "@queryn/project";
+import { QuerynRuntime } from "./runtime.js";
 import { startRpcServer } from "./rpc-server.js";
 
 const [command = "help", ...args] = process.argv.slice(2);
@@ -16,7 +16,7 @@ void main().catch((error) => {
 async function main(): Promise<void> {
   if (command === "help" || command === "--help" || command === "-h") return printHelp();
   if (command === "selftest") return selftest();
-  const runtime = new OsnovaRuntime(optional("--runtime-home") ?? undefined);
+  const runtime = new QuerynRuntime(optional("--runtime-home") ?? undefined);
   await runtime.initialize();
   if (command === "serve") return serve(runtime);
   try {
@@ -54,8 +54,8 @@ async function main(): Promise<void> {
     if (command === "extension:disconnect") { await runtime.extensions.disconnect(projectPath, required("--extension")); return print({ connected: false }); }
     if (command === "runtime:start") return print(await runtime.startRuntime(required("--runtime"), projectPath));
     if (command === "session:create") return print(await createSession(runtime.projects.get(projectPath), { title: required("--title"), goal: optional("--goal") }));
-    if (command === "session:list") return print(await (await import("@osnova/project")).listSessions(projectPath));
-    if (command === "session:events") return print(await (await import("@osnova/project")).readSessionEvents(projectPath, required("--session")));
+    if (command === "session:list") return print(await (await import("@queryn/project")).listSessions(projectPath));
+    if (command === "session:events") return print(await (await import("@queryn/project")).readSessionEvents(projectPath, required("--session")));
     if (command === "operation:list") return print(runtime.registry.list({ includeHidden: flag("--all"), extensionVersions: runtime.projects.extensionVersions(projectPath) }));
     if (command === "operation:invoke") {
       let job = await runtime.operations.invoke({
@@ -82,9 +82,9 @@ async function main(): Promise<void> {
   } finally { await runtime.shutdown(); }
 }
 
-async function serve(runtime: OsnovaRuntime): Promise<void> {
+async function serve(runtime: QuerynRuntime): Promise<void> {
   const handle = await startRpcServer(runtime);
-  process.stdout.write(`${JSON.stringify({ address: handle.address, token: handle.token, protocol: "osnova-rpc/1", pid: process.pid })}\n`);
+  process.stdout.write(`${JSON.stringify({ address: handle.address, token: handle.token, protocol: "queryn-rpc/1", pid: process.pid })}\n`);
   const close = async () => { await handle.close(); await runtime.shutdown(); process.exit(0); };
   process.once("SIGINT", () => void close());
   process.once("SIGTERM", () => void close());
@@ -92,14 +92,14 @@ async function serve(runtime: OsnovaRuntime): Promise<void> {
 }
 
 async function selftest(): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "osnova-runtime-selftest-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "queryn-runtime-selftest-"));
   try {
-    const runtime = new OsnovaRuntime(path.join(root, "runtime"));
+    const runtime = new QuerynRuntime(path.join(root, "runtime"));
     await runtime.initialize();
     const projectPath = path.join(root, "project");
     const project = await runtime.projects.create({ rootPath: projectPath, id: "selftest", name: "Runtime self-test" });
     const session = await createSession(project, { title: "Create a note" });
-    const job = await runtime.operations.invokeAndWait({ projectPath, sessionId: session.id, operationId: "osnova.notes.create", arguments: { title: "First note", body: "Local-first knowledge." }, publishArtifacts: true });
+    const job = await runtime.operations.invokeAndWait({ projectPath, sessionId: session.id, operationId: "queryn.notes.create", arguments: { title: "First note", body: "Local-first knowledge." }, publishArtifacts: true });
     if (job.status !== "succeeded") throw new Error(job.error ?? `Unexpected job state: ${job.status}`);
     const artifacts = await listArtifacts(projectPath);
     if (artifacts.length !== 1) throw new Error("Self-test did not create an artifact descriptor.");
@@ -118,11 +118,11 @@ function terminal(status: string): boolean { return ["succeeded", "failed", "can
 function approval(stepId: string, approved: boolean, scope?: string) {
   return { planId: "headless-cli", stepId, approved, scope: scope === "operation-project" ? "operation-project" as const : "once" as const, decidedAt: new Date().toISOString() };
 }
-function waitForJob(runtime: OsnovaRuntime, jobId: string, predicate: (job: ReturnType<OsnovaRuntime["jobs"]["get"]>) => boolean) {
+function waitForJob(runtime: QuerynRuntime, jobId: string, predicate: (job: ReturnType<QuerynRuntime["jobs"]["get"]>) => boolean) {
   const current = runtime.jobs.get(jobId);
   if (predicate(current)) return Promise.resolve(current);
-  return new Promise<ReturnType<OsnovaRuntime["jobs"]["get"]>>((resolve) => {
-    const changed = (job: ReturnType<OsnovaRuntime["jobs"]["get"]>) => {
+  return new Promise<ReturnType<QuerynRuntime["jobs"]["get"]>>((resolve) => {
+    const changed = (job: ReturnType<QuerynRuntime["jobs"]["get"]>) => {
       if (job.id === jobId && predicate(job)) { runtime.jobs.off("changed", changed); resolve(job); }
     };
     runtime.jobs.on("changed", changed);
@@ -131,5 +131,5 @@ function waitForJob(runtime: OsnovaRuntime, jobId: string, predicate: (job: Retu
 async function readStandardInput(): Promise<string> { let value = ""; for await (const chunk of process.stdin) value += String(chunk); return value; }
 function print(value: unknown): void { process.stdout.write(`${JSON.stringify(value, null, 2)}\n`); }
 function printHelp(): void {
-  process.stdout.write(`osnova-runtime 0.2\n\nCommands:\n  serve | doctor | status | selftest\n  project:create|open|validate|migrate\n  extension:install|update|list|rollback|connect|disconnect\n  runtime:start|stop\n  session:create|list|events\n  operation:list|invoke | approval:decide\n  artifact:list|publish\n  context:preview|resolve|reindex\n  connector:list|sync\n  model:list|install|remove|provider-list|provider-configure\n  job:get|list|cancel\n\nUse --project PATH for project-scoped commands. Secrets are accepted only with --secret-stdin.\n`);
+  process.stdout.write(`queryn-runtime 0.2\n\nCommands:\n  serve | doctor | status | selftest\n  project:create|open|validate|migrate\n  extension:install|update|list|rollback|connect|disconnect\n  runtime:start|stop\n  session:create|list|events\n  operation:list|invoke | approval:decide\n  artifact:list|publish\n  context:preview|resolve|reindex\n  connector:list|sync\n  model:list|install|remove|provider-list|provider-configure\n  job:get|list|cancel\n\nUse --project PATH for project-scoped commands. Secrets are accepted only with --secret-stdin.\n`);
 }

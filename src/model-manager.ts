@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { chmod, copyFile, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import type { ModelDependency } from "@osnova/plugin-sdk";
+import type { ModelDependency } from "@queryn/plugin-sdk";
 import { writeJsonAtomic } from "./atomic.js";
 
 export interface InstalledModel {
